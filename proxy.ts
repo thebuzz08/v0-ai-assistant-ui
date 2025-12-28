@@ -1,62 +1,52 @@
-import { createServerClient } from "@supabase/ssr"
-import { NextResponse, type NextRequest } from "next/server"
+import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server"
+import { NextResponse } from "next/server"
 
-export async function proxy(request: NextRequest) {
-  let supabaseResponse = NextResponse.next({ request })
+const isProtectedRoute = createRouteMatcher([
+  "/home(.*)",
+  "/settings(.*)",
+  "/notes(.*)",
+  "/schedule(.*)",
+  "/live(.*)",
+  "/search(.*)",
+  "/data(.*)",
+  "/admin(.*)",
+])
 
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        getAll() {
-          return request.cookies.getAll()
-        },
-        setAll(cookiesToSet) {
-          cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value))
-          supabaseResponse = NextResponse.next({ request })
-          cookiesToSet.forEach(({ name, value, options }) => supabaseResponse.cookies.set(name, value, options))
-        },
-      },
-    },
-  )
+const isPublicRoute = createRouteMatcher(["/login(.*)", "/sign-in(.*)", "/sign-up(.*)", "/api/webhooks(.*)"])
 
-  // Refresh the session
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+export default clerkMiddleware(async (auth, req) => {
+  const { userId } = await auth()
 
-  // Protected routes
-  const protectedPaths = ["/home", "/settings", "/notes", "/schedule", "/live", "/search", "/data", "/admin"]
-  const isProtectedPath = protectedPaths.some((path) => request.nextUrl.pathname.startsWith(path))
+  // Allow guest mode
+  const guestMode = req.cookies.get("auth_guest_mode")?.value
 
-  if (isProtectedPath && !user) {
-    const guestMode = request.cookies.get("auth_guest_mode")?.value
-    if (guestMode !== "true") {
-      const url = request.nextUrl.clone()
-      url.pathname = "/login"
-      return NextResponse.redirect(url)
-    }
+  // Protect routes
+  if (isProtectedRoute(req) && !userId && guestMode !== "true") {
+    const url = req.nextUrl.clone()
+    url.pathname = "/login"
+    return NextResponse.redirect(url)
   }
 
-  if (request.nextUrl.pathname === "/login" && user) {
-    const onboardingComplete = request.cookies.get("onboarding_complete")?.value
-    const url = request.nextUrl.clone()
+  // Redirect logged-in users from login page
+  if (req.nextUrl.pathname === "/login" && userId) {
+    const onboardingComplete = req.cookies.get("onboarding_complete")?.value
+    const url = req.nextUrl.clone()
     url.pathname = onboardingComplete === "true" ? "/home" : "/"
     return NextResponse.redirect(url)
   }
 
-  if (request.nextUrl.pathname === "/" && user) {
-    const onboardingComplete = request.cookies.get("onboarding_complete")?.value
+  // Redirect logged-in users from root if onboarding is complete
+  if (req.nextUrl.pathname === "/" && userId) {
+    const onboardingComplete = req.cookies.get("onboarding_complete")?.value
     if (onboardingComplete === "true") {
-      const url = request.nextUrl.clone()
+      const url = req.nextUrl.clone()
       url.pathname = "/home"
       return NextResponse.redirect(url)
     }
   }
 
-  return supabaseResponse
-}
+  return NextResponse.next()
+})
 
 export const config = {
   matcher: ["/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)"],

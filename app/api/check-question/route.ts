@@ -220,9 +220,6 @@ export async function POST(request: NextRequest) {
       customInstructions,
     } = body
 
-    console.log("[v0] API received text:", text)
-    console.log("[v0] isSimpleQuestion:", isSimpleQuestion(text))
-
     if (!text || text.trim().length < 3) {
       return Response.json({ isQuestion: false, answer: null })
     }
@@ -263,7 +260,6 @@ export async function POST(request: NextRequest) {
         const tomorrowDay = day + 1
         const daysInMonth = new Date(year, month, 0).getDate()
         if (tomorrowDay > daysInMonth) {
-          // Handle month rollover
           const nextMonth = month === 12 ? 1 : month + 1
           const nextYear = month === 12 ? year + 1 : year
           tomorrowIso = `${nextYear}-${String(nextMonth).padStart(2, "0")}-01`
@@ -272,7 +268,6 @@ export async function POST(request: NextRequest) {
         }
       } else {
         isoDate = body.localDateTime.isoDate || new Date().toISOString().split("T")[0]
-        // Fallback: parse and add day
         const [y, m, d] = isoDate.split("-").map(Number)
         const nextDay = d + 1
         const daysInMonth = new Date(y, m, 0).getDate()
@@ -306,7 +301,6 @@ export async function POST(request: NextRequest) {
     if (isSimple) {
       const cachedAnswer = getCachedResponse(cacheKey)
       if (cachedAnswer) {
-        console.log("[v0] Cache hit for:", text)
         return Response.json({
           isQuestion: true,
           answer: cachedAnswer,
@@ -317,7 +311,6 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Handle pending specific deletion confirmation
     if (body.pendingSpecificDeletion && body.pendingSpecificDeletion.length > 0) {
       const confirmationCheck = text.toLowerCase().trim()
       const isConfirmed = /^(yes|yeah|yep|sure|confirm|delete|go ahead|do it)/.test(confirmationCheck)
@@ -386,7 +379,6 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Handle pending bulk deletion confirmation
     if (body.pendingBulkDeletion) {
       const confirmationCheck = text.toLowerCase().trim()
       const isConfirmed = /^(yes|yeah|yep|sure|confirm|delete|go ahead|do it)/.test(confirmationCheck)
@@ -424,7 +416,6 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Handle pending single deletion confirmation
     if (body.pendingDeletion) {
       const confirmationCheck = text.toLowerCase().trim()
       const isConfirmed = /^(yes|yeah|yep|sure|confirm|delete|go ahead|do it)/.test(confirmationCheck)
@@ -456,7 +447,6 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Build context strings
     const calendarContext =
       calendarEvents && calendarEvents.length > 0
         ? calendarEvents
@@ -474,9 +464,7 @@ export async function POST(request: NextRequest) {
       !/(who is|what is|how much|market cap|population|capital of|weather|news|price)/i.test(text)
     const needsCalendarCheck = calendarKeywords.test(text) || lastMentionedEvent || lastCreatedEvents.length > 0
 
-    // Only do complex calendar check if needed
     if (needsCalendarCheck) {
-      // Check for complex calendar operations (recurring, bulk delete, specific delete)
       const complexCheckPrompt = `Analyze if the user wants a COMPLEX calendar operation.
 
 CURRENT TIME: ${currentTimeStr}
@@ -529,7 +517,6 @@ Return JSON only:
         if (jsonMatch) complexData = JSON.parse(jsonMatch[0])
       } catch (e) {}
 
-      // Handle CREATE single event
       if (complexData.operation === "CREATE" && complexData.create) {
         const c = complexData.create
         const accessToken = await getValidAccessToken()
@@ -566,7 +553,6 @@ Return JSON only:
         })
       }
 
-      // Handle RECURRING events
       if (complexData.operation === "RECURRING" && complexData.recurring) {
         const r = complexData.recurring
         const accessToken = await getValidAccessToken()
@@ -596,7 +582,6 @@ Return JSON only:
           )
 
           if (created) {
-            // Fetch the created events to store their IDs
             const events = await findEventByTitle(
               accessToken,
               r.title,
@@ -629,7 +614,6 @@ Return JSON only:
         })
       }
 
-      // Handle BULK_DELETE
       if (complexData.operation === "BULK_DELETE" && complexData.bulkDelete) {
         const b = complexData.bulkDelete
         if (safetyMode) {
@@ -658,7 +642,6 @@ Return JSON only:
         }
       }
 
-      // Handle SPECIFIC_DELETE (multiple specific events from context)
       if (complexData.operation === "SPECIFIC_DELETE" && complexData.specificDelete?.length > 0) {
         const events = complexData.specificDelete
         if (safetyMode) {
@@ -713,7 +696,6 @@ Return JSON only:
         }
       }
 
-      // Handle SINGLE_DELETE
       if (complexData.operation === "SINGLE_DELETE" && complexData.singleDelete) {
         const s = complexData.singleDelete
         const eventId = s.eventId || lastMentionedEvent?.id
@@ -780,12 +762,12 @@ ${customInstructions ? `\nUSER'S CUSTOM INSTRUCTIONS (follow these):\n${customIn
 
 YOUR JOB: Answer questions and help the user. If they ask something, answer it.
 
-ONLY say "SILENT" if the text is:
-- Clearly not directed at you (people talking to each other)
-- Completely incoherent/gibberish
-- Just a greeting with nothing else ("hi", "hello")
+CRITICAL: You MUST respond to ALL questions. ONLY say "SILENT" if the text is:
+- People talking to each other (not to you)
+- Complete gibberish/random sounds
+- Just "hi" or "hello" with nothing else
 
-If there's ANY question or request, respond helpfully.
+If there's ANY question - even about current events, interesting facts, or things you need to search for - you MUST provide an answer. Never ignore a genuine question.
 
 ${conversationHistory ? `RECENT CONVERSATION:\n${conversationHistory}\n` : ""}
 ${lastMentionedEvent ? `LAST DISCUSSED EVENT: "${lastMentionedEvent.title}" at ${lastMentionedEvent.time}` : ""}
@@ -803,6 +785,7 @@ RESPONSE RULES:
   - Use format "[event name] at [time]" - NEVER include dates or day names
   - "call with Clark at 8 PM" NOT "call with Clark on Saturday at 8:00 PM"
   - If no events match: "nothing scheduled"
+- For current events/news questions: Use your search tools to find recent information, then give a brief factual answer
 - For explanations: 1-2 sentences max
 - NEVER start with "The answer is", "It is", "The [thing] is", "You have", etc.
 
@@ -811,7 +794,7 @@ User says: "${text}"
 Your response:`
 
     const modelConfig: any = {}
-    if (!useSimpleModel && !isCalendarQuery) {
+    if (!isCalendarQuery) {
       modelConfig.tools = [{ googleSearch: {} }]
     }
 
@@ -821,24 +804,21 @@ Your response:`
       config: modelConfig,
     })
 
-    const result = response.text?.trim() || "SILENT"
-    const shouldStaySilent = result.toUpperCase().replace(/[^A-Z]/g, "") === "SILENT"
+    const result = response.text?.trim() || ""
+    const shouldStaySilent = result.toUpperCase().replace(/[^A-Z]/g, "") === "SILENT" || result.length === 0
 
     if (!shouldStaySilent && isSimple) {
       setCachedResponse(cacheKey, result)
     }
 
-    // Track mentioned events for future reference
     let mentionedEvent = lastMentionedEvent
     if (!shouldStaySilent && calendarEvents?.length > 0) {
       const resultLower = result.toLowerCase()
 
-      // Try to match an event mentioned in the response
       for (const event of calendarEvents) {
         if (!event.title) continue
         const titleLower = event.title.toLowerCase()
 
-        // Exact or partial match
         if (
           resultLower.includes(titleLower) ||
           titleLower
@@ -856,7 +836,6 @@ Your response:`
         }
       }
 
-      // If asking about next/upcoming, track closest event
       if (/next|upcoming|soonest/.test(text.toLowerCase())) {
         const now = new Date()
         let closest: any = null
@@ -887,7 +866,7 @@ Your response:`
       answer: shouldStaySilent ? null : result,
       lastMentionedEvent: mentionedEvent,
       lastCreatedEvents,
-      model, // Include model used for debugging
+      model,
     })
   } catch (error) {
     console.error("[v0] API Error:", error)

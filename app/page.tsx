@@ -64,7 +64,7 @@ export default function OnboardingPage() {
   }
 
   const isGoogleUser = user.provider === "google"
-  const calendarAutoConnected = isGoogleUser
+  const calendarAutoConnected = isGoogleUser || calendarConnected
 
   const handleConnect = () => {
     if (calendarAutoConnected) {

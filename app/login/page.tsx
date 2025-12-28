@@ -4,6 +4,7 @@ import type React from "react"
 import { useState, useEffect, Suspense } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { useAuth } from "@/lib/auth-context"
+import { useSignIn, useSignUp } from "@clerk/nextjs"
 import { Sparkles, Mail, Eye, EyeOff, Loader2, ArrowLeft } from "lucide-react"
 
 type AuthMode = "login" | "signup" | "email-login" | "email-signup"
@@ -11,15 +12,9 @@ type AuthMode = "login" | "signup" | "email-login" | "email-signup"
 function LoginContent() {
   const router = useRouter()
   const searchParams = useSearchParams()
-  const {
-    user,
-    isLoading: authLoading,
-    signInWithGoogle,
-    signInWithApple,
-    signInWithEmail,
-    signUpWithEmail,
-    continueAsGuest,
-  } = useAuth()
+  const { user, isLoading: authLoading, continueAsGuest } = useAuth()
+  const { signIn, isLoaded: signInLoaded } = useSignIn()
+  const { signUp, isLoaded: signUpLoaded } = useSignUp()
 
   const initialMode = searchParams.get("mode") === "email" ? "email-login" : "login"
   const [mode, setMode] = useState<AuthMode>(initialMode as AuthMode)
@@ -40,15 +35,20 @@ function LoginContent() {
   }, [authLoading, user, router])
 
   const handleGoogleSignIn = async () => {
+    if (!signIn) return
     setIsLoading(true)
     setError("")
-    await signInWithGoogle()
-  }
 
-  const handleAppleSignIn = async () => {
-    setIsLoading(true)
-    setError("")
-    await signInWithApple()
+    try {
+      await signIn.authenticateWithRedirect({
+        strategy: "oauth_google",
+        redirectUrl: "/sso-callback",
+        redirectUrlComplete: "/",
+      })
+    } catch (err: any) {
+      setError(err.errors?.[0]?.message || "Failed to sign in with Google")
+      setIsLoading(false)
+    }
   }
 
   const handleEmailSubmit = async (e: React.FormEvent) => {
@@ -56,25 +56,42 @@ function LoginContent() {
     setError("")
     setIsLoading(true)
 
-    if (mode === "email-signup") {
-      if (!name.trim()) {
-        setError("Name is required")
-        setIsLoading(false)
-        return
-      }
-      const result = await signUpWithEmail(email, password, name)
-      if (result.success) {
-        setSignUpSuccess(true)
+    try {
+      if (mode === "email-signup") {
+        if (!signUp) return
+        if (!name.trim()) {
+          setError("Name is required")
+          setIsLoading(false)
+          return
+        }
+
+        const result = await signUp.create({
+          emailAddress: email,
+          password,
+          firstName: name.split(" ")[0],
+          lastName: name.split(" ").slice(1).join(" ") || undefined,
+        })
+
+        if (result.status === "complete") {
+          window.location.href = "/"
+        } else if (result.status === "missing_requirements") {
+          await signUp.prepareEmailAddressVerification({ strategy: "email_code" })
+          setSignUpSuccess(true)
+        }
       } else {
-        setError(result.error || "Sign up failed")
+        if (!signIn) return
+
+        const result = await signIn.create({
+          identifier: email,
+          password,
+        })
+
+        if (result.status === "complete") {
+          window.location.href = "/"
+        }
       }
-    } else {
-      const result = await signInWithEmail(email, password)
-      if (result.success) {
-        window.location.href = "/"
-      } else {
-        setError(result.error || "Please verify your email to log in.")
-      }
+    } catch (err: any) {
+      setError(err.errors?.[0]?.message || "Authentication failed")
     }
 
     setIsLoading(false)
@@ -85,7 +102,7 @@ function LoginContent() {
     router.push("/")
   }
 
-  if (authLoading) {
+  if (authLoading || !signInLoaded || !signUpLoaded) {
     return (
       <main
         className="min-h-screen flex items-center justify-center"
@@ -120,7 +137,7 @@ function LoginContent() {
             </div>
             <h1 className="text-2xl font-semibold text-zinc-900 dark:text-white mb-2">Check Your Email</h1>
             <p className="text-zinc-500 dark:text-zinc-400 text-sm mb-6">
-              We sent a confirmation link to <strong>{email}</strong>. Please click the link to verify your account.
+              We sent a verification code to <strong>{email}</strong>. Please check your inbox.
             </p>
             <button
               onClick={() => {
@@ -291,13 +308,7 @@ function LoginContent() {
                 </div>
 
                 {error && (
-                  <div
-                    className={`text-sm text-center p-3 rounded-xl ${
-                      error.includes("verify your email")
-                        ? "bg-amber-50 dark:bg-amber-900/20 text-amber-600 dark:text-amber-400"
-                        : "text-red-500"
-                    }`}
-                  >
+                  <div className="text-sm text-center p-3 rounded-xl text-red-500 bg-red-50 dark:bg-red-900/20">
                     {error}
                   </div>
                 )}

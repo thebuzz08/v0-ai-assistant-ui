@@ -1,260 +1,144 @@
 "use client"
 
-import { createContext, useContext, useState, useEffect, useCallback, useRef, type ReactNode } from "react"
-import { createClient, resetClient } from "@/lib/supabase/client"
-import type { User, SupabaseClient } from "@supabase/supabase-js"
+import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react"
+import { useUser, useClerk, useSession } from "@clerk/nextjs"
 
 export type AuthUser = {
   id: string
   email: string
   name: string
   picture?: string
-  provider: "google" | "apple" | "email" | "guest"
-  hasPassword?: boolean
+  provider: "google" | "email" | "guest"
   googleCalendarConnected?: boolean
 }
 
 type AuthContextType = {
   user: AuthUser | null
-  supabaseUser: User | null
   isLoading: boolean
   isGuest: boolean
   signInWithGoogle: () => Promise<void>
-  signInWithApple: () => Promise<void>
   signInWithEmail: (email: string, password: string) => Promise<{ success: boolean; error?: string }>
   signUpWithEmail: (email: string, password: string, name: string) => Promise<{ success: boolean; error?: string }>
   continueAsGuest: () => void
   signOut: () => Promise<void>
   linkGoogleAccount: () => Promise<{ success: boolean; error?: string }>
-  addPassword: (password: string) => Promise<{ success: boolean; error?: string }>
-  checkHasPassword: () => Promise<boolean>
+  getToken: () => Promise<string | null>
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined)
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [user, setUser] = useState<AuthUser | null>(null)
-  const [supabaseUser, setSupabaseUser] = useState<User | null>(null)
+  const { user: clerkUser, isLoaded: clerkLoaded } = useUser()
+  const { session } = useSession()
+  const clerk = useClerk()
+  const [guestUser, setGuestUser] = useState<AuthUser | null>(null)
   const [isLoading, setIsLoading] = useState(true)
-  const initRef = useRef(false)
-  const mountedRef = useRef(true)
-  const supabaseRef = useRef<SupabaseClient | null>(null)
 
-  const getSupabase = useCallback(() => {
-    if (!supabaseRef.current) {
-      try {
-        supabaseRef.current = createClient()
-      } catch (error) {
-        console.error("[v0] Failed to create Supabase client:", error)
-        return null
-      }
-    }
-    return supabaseRef.current
-  }, [])
+  // Convert Clerk user to our AuthUser format
+  const user: AuthUser | null = (() => {
+    if (guestUser) return guestUser
+    if (!clerkUser) return null
 
-  const toAuthUser = useCallback((supaUser: User): AuthUser => {
-    const provider = supaUser.app_metadata?.provider
-    const isGoogleUser = provider === "google"
-    const hasPassword =
-      supaUser.app_metadata?.providers?.includes("email") || supaUser.identities?.some((i) => i.provider === "email")
+    const googleAccount = clerkUser.externalAccounts?.find((acc) => acc.provider === "google")
+    const isGoogleUser = !!googleAccount
 
     return {
-      id: supaUser.id,
-      email: supaUser.email || "",
-      name: supaUser.user_metadata?.full_name || supaUser.user_metadata?.name || supaUser.email?.split("@")[0] || "",
-      picture: supaUser.user_metadata?.avatar_url || supaUser.user_metadata?.picture,
-      provider: isGoogleUser ? "google" : provider === "apple" ? "apple" : "email",
-      hasPassword: hasPassword || false,
+      id: clerkUser.id,
+      email: clerkUser.primaryEmailAddress?.emailAddress || "",
+      name:
+        clerkUser.fullName || clerkUser.firstName || clerkUser.primaryEmailAddress?.emailAddress?.split("@")[0] || "",
+      picture: clerkUser.imageUrl,
+      provider: isGoogleUser ? "google" : "email",
       googleCalendarConnected: isGoogleUser,
     }
-  }, [])
+  })()
 
   useEffect(() => {
-    if (initRef.current) return
-    initRef.current = true
-    mountedRef.current = true
-
-    const initAuth = async () => {
-      try {
-        if (typeof window !== "undefined") {
-          const guestMode = localStorage.getItem("auth_guest_mode")
-          if (guestMode === "true") {
-            if (mountedRef.current) {
-              setUser({
-                id: "guest",
-                email: "",
-                name: "Guest",
-                provider: "guest",
-              })
-              setIsLoading(false)
-            }
-            return
-          }
-        }
-
-        const supabase = getSupabase()
-        if (!supabase) {
-          console.error("[v0] Supabase client not available")
-          if (mountedRef.current) setIsLoading(false)
-          return
-        }
-
-        const {
-          data: { session },
-          error: sessionError,
-        } = await supabase.auth.getSession()
-
-        if (sessionError) {
-          console.error("[v0] Session error:", sessionError.message)
-          if (mountedRef.current) setIsLoading(false)
-          return
-        }
-
-        if (session?.user && mountedRef.current) {
-          setSupabaseUser(session.user)
-          setUser(toAuthUser(session.user))
-        }
-
-        if (mountedRef.current) setIsLoading(false)
-
-        const {
-          data: { subscription },
-        } = supabase.auth.onAuthStateChange(async (event, newSession) => {
-          if (!mountedRef.current) return
-
-          if (newSession?.user) {
-            setSupabaseUser(newSession.user)
-            setUser(toAuthUser(newSession.user))
-          } else if (event === "SIGNED_OUT") {
-            setUser(null)
-            setSupabaseUser(null)
-          }
-
-          setIsLoading(false)
+    if (clerkLoaded) {
+      // Check for guest mode
+      const guestMode = localStorage.getItem("auth_guest_mode")
+      if (guestMode === "true" && !clerkUser) {
+        setGuestUser({
+          id: "guest",
+          email: "",
+          name: "Guest",
+          provider: "guest",
         })
-
-        return () => {
-          subscription.unsubscribe()
-        }
-      } catch (error) {
-        console.error("[v0] Auth init error:", error)
-        if (mountedRef.current) setIsLoading(false)
       }
+      setIsLoading(false)
     }
-
-    initAuth()
-
-    return () => {
-      mountedRef.current = false
-    }
-  }, [toAuthUser, getSupabase])
+  }, [clerkLoaded, clerkUser])
 
   const signInWithGoogle = useCallback(async () => {
-    const supabase = getSupabase()
-    if (!supabase) return
-
     localStorage.removeItem("auth_guest_mode")
+    setGuestUser(null)
 
-    const redirectUrl =
-      typeof window !== "undefined" ? `${window.location.origin}/auth/callback` : "https://omnisound.xyz/auth/callback"
-
-    await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: {
-        redirectTo: redirectUrl,
-        scopes: "https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/calendar.events",
-      },
+    // Redirect to Clerk's Google OAuth with calendar scopes
+    clerk.redirectToSignIn({
+      redirectUrl: "/",
+      signInForceRedirectUrl: "/",
     })
-  }, [getSupabase])
-
-  const signInWithApple = useCallback(async () => {
-    const supabase = getSupabase()
-    if (!supabase) return
-
-    localStorage.removeItem("auth_guest_mode")
-
-    const redirectUrl =
-      typeof window !== "undefined" ? `${window.location.origin}/auth/callback` : "https://omnisound.xyz/auth/callback"
-
-    await supabase.auth.signInWithOAuth({
-      provider: "apple",
-      options: { redirectTo: redirectUrl },
-    })
-  }, [getSupabase])
+  }, [clerk])
 
   const signInWithEmail = useCallback(
     async (email: string, password: string) => {
-      const supabase = getSupabase()
-      if (!supabase) return { success: false, error: "Authentication service unavailable" }
-
       localStorage.removeItem("auth_guest_mode")
+      setGuestUser(null)
 
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password })
+      try {
+        const result = await clerk.client?.signIn.create({
+          identifier: email,
+          password,
+        })
 
-      if (error) {
-        if (error.message.includes("Email not confirmed")) {
-          return {
-            success: false,
-            error: "Please verify your email before signing in. Check your inbox for the verification link.",
-          }
+        if (result?.status === "complete") {
+          await clerk.setActive({ session: result.createdSessionId })
+          return { success: true }
         }
-        return { success: false, error: error.message }
-      }
 
-      if (data.user && !data.user.email_confirmed_at) {
-        await supabase.auth.signOut()
-        return {
-          success: false,
-          error: "Please verify your email before signing in. Check your inbox for the verification link.",
-        }
+        return { success: false, error: "Sign in failed" }
+      } catch (error: any) {
+        return { success: false, error: error.errors?.[0]?.message || error.message || "Sign in failed" }
       }
-
-      return { success: true }
     },
-    [getSupabase],
+    [clerk],
   )
 
   const signUpWithEmail = useCallback(
     async (email: string, password: string, name: string) => {
-      const supabase = getSupabase()
-      if (!supabase) return { success: false, error: "Authentication service unavailable" }
-
       localStorage.removeItem("auth_guest_mode")
+      setGuestUser(null)
 
-      const redirectUrl =
-        typeof window !== "undefined"
-          ? `${window.location.origin}/auth/callback`
-          : "https://omnisound.xyz/auth/callback"
+      try {
+        const result = await clerk.client?.signUp.create({
+          emailAddress: email,
+          password,
+          firstName: name.split(" ")[0],
+          lastName: name.split(" ").slice(1).join(" ") || undefined,
+        })
 
-      const { data, error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          emailRedirectTo: process.env.NEXT_PUBLIC_DEV_SUPABASE_REDIRECT_URL || redirectUrl,
-          data: { full_name: name, name },
-        },
-      })
-
-      if (error) {
-        return { success: false, error: error.message }
-      }
-
-      if (data.user?.identities?.length === 0) {
-        return {
-          success: false,
-          error: "An account with this email already exists. Please sign in with Google or use your password.",
+        if (result?.status === "complete") {
+          await clerk.setActive({ session: result.createdSessionId })
+          return { success: true }
         }
-      }
 
-      return { success: true }
+        // Handle email verification if needed
+        if (result?.status === "missing_requirements") {
+          await result.prepareEmailAddressVerification({ strategy: "email_code" })
+          return { success: false, error: "Please check your email for a verification code." }
+        }
+
+        return { success: false, error: "Sign up failed" }
+      } catch (error: any) {
+        return { success: false, error: error.errors?.[0]?.message || error.message || "Sign up failed" }
+      }
     },
-    [getSupabase],
+    [clerk],
   )
 
   const continueAsGuest = useCallback(() => {
     localStorage.setItem("auth_guest_mode", "true")
-    document.cookie = "auth_guest_mode=true; path=/; max-age=31536000; SameSite=Lax"
-    setUser({
+    setGuestUser({
       id: "guest",
       email: "",
       name: "Guest",
@@ -263,87 +147,43 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const signOut = useCallback(async () => {
-    try {
-      const supabase = getSupabase()
-      localStorage.removeItem("auth_guest_mode")
-      localStorage.removeItem("onboarding_complete")
-      document.cookie = "auth_guest_mode=; path=/; max-age=0"
-      document.cookie = "onboarding_complete=; path=/; max-age=0"
-      document.cookie = "google_calendar_connected=; path=/; max-age=0"
-      if (supabase) {
-        await supabase.auth.signOut()
-      }
-      resetClient()
-      supabaseRef.current = null
-      setUser(null)
-      setSupabaseUser(null)
-    } catch (error) {
-      console.error("[v0] Sign out error:", error)
-      setUser(null)
-      setSupabaseUser(null)
-    }
-  }, [getSupabase])
+    localStorage.removeItem("auth_guest_mode")
+    localStorage.removeItem("onboarding_complete")
+    setGuestUser(null)
+    await clerk.signOut()
+  }, [clerk])
 
   const linkGoogleAccount = useCallback(async () => {
-    const supabase = getSupabase()
-    if (!supabase) return { success: false, error: "Authentication service unavailable" }
-
-    const redirectUrl =
-      typeof window !== "undefined" ? `${window.location.origin}/auth/callback` : "https://omnisound.xyz/auth/callback"
-
-    const { error } = await supabase.auth.linkIdentity({
-      provider: "google",
-      options: {
-        redirectTo: redirectUrl,
-        scopes: "https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/calendar.events",
-      },
-    })
-
-    if (error) {
-      return { success: false, error: error.message }
-    }
-    return { success: true }
-  }, [getSupabase])
-
-  const addPassword = useCallback(
-    async (password: string) => {
-      const supabase = getSupabase()
-      if (!supabase) return { success: false, error: "Authentication service unavailable" }
-
-      const { error } = await supabase.auth.updateUser({ password })
-      if (error) {
-        return { success: false, error: error.message }
-      }
+    try {
+      // Use Clerk's OAuth to link Google account
+      const redirectUrl = `${window.location.origin}/`
+      await clerk.redirectToSignIn({
+        redirectUrl,
+        signInForceRedirectUrl: redirectUrl,
+      })
       return { success: true }
-    },
-    [getSupabase],
-  )
+    } catch (error: any) {
+      return { success: false, error: error.message || "Failed to link Google account" }
+    }
+  }, [clerk])
 
-  const checkHasPassword = useCallback(async () => {
-    if (!supabaseUser) return false
-    return (
-      supabaseUser.app_metadata?.providers?.includes("email") ||
-      supabaseUser.identities?.some((i) => i.provider === "email") ||
-      false
-    )
-  }, [supabaseUser])
+  const getToken = useCallback(async () => {
+    return session?.getToken() ?? null
+  }, [session])
 
   return (
     <AuthContext.Provider
       value={{
         user,
-        supabaseUser,
         isLoading,
         isGuest: user?.provider === "guest",
         signInWithGoogle,
-        signInWithApple,
         signInWithEmail,
         signUpWithEmail,
         continueAsGuest,
         signOut,
         linkGoogleAccount,
-        addPassword,
-        checkHasPassword,
+        getToken,
       }}
     >
       {children}
