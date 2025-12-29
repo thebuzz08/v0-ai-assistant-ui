@@ -9,7 +9,6 @@ export type AuthUser = {
   name: string
   picture?: string
   provider: "google" | "email" | "guest"
-  googleCalendarConnected?: boolean
 }
 
 type AuthContextType = {
@@ -49,7 +48,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         clerkUser.fullName || clerkUser.firstName || clerkUser.primaryEmailAddress?.emailAddress?.split("@")[0] || "",
       picture: clerkUser.imageUrl,
       provider: isGoogleUser ? "google" : "email",
-      googleCalendarConnected: isGoogleUser,
     }
   })()
 

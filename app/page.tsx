@@ -27,7 +27,7 @@ export default function OnboardingPage() {
   const [mounted, setMounted] = useState(false)
 
   const { requestPermission } = useMicrophone()
-  const { isConnected: calendarConnected, connectGoogle } = useCalendar()
+  const { isConnected: calendarConnected, connectGoogle, checkConnectionStatus } = useCalendar()
 
   useEffect(() => {
     setMounted(true)
@@ -48,6 +48,16 @@ export default function OnboardingPage() {
     }
   }, [mounted, user, router])
 
+  useEffect(() => {
+    if (mounted && user) {
+      const urlParams = new URLSearchParams(window.location.search)
+      if (urlParams.get("success") === "google_connected") {
+        window.history.replaceState({}, "", window.location.pathname)
+        checkConnectionStatus()
+      }
+    }
+  }, [mounted, user, checkConnectionStatus])
+
   if (authLoading || !mounted) {
     return (
       <main
@@ -63,15 +73,8 @@ export default function OnboardingPage() {
     return null
   }
 
-  const isGoogleUser = user.provider === "google"
-  const calendarAutoConnected = isGoogleUser || calendarConnected
-
   const handleConnect = () => {
-    if (calendarAutoConnected) {
-      setStep("permissions")
-    } else {
-      setStep("calendar")
-    }
+    setStep("calendar")
   }
 
   const handleConnectCalendar = async () => {
@@ -101,9 +104,7 @@ export default function OnboardingPage() {
     router.push("/home")
   }
 
-  const steps = calendarAutoConnected
-    ? (["welcome", "connect", "permissions"] as const)
-    : (["welcome", "connect", "calendar", "permissions"] as const)
+  const steps = ["welcome", "connect", "calendar", "permissions"] as const
 
   return (
     <main

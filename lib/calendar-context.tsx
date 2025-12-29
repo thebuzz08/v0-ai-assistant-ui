@@ -3,6 +3,8 @@
 import { createContext, useContext, useState, useCallback, useEffect, useRef, type ReactNode } from "react"
 import { useAuth } from "./auth-context"
 
+// ... existing code for types ...
+
 export interface CalendarEvent {
   id: string
   summary: string
@@ -70,24 +72,8 @@ export function CalendarProvider({ children }: { children: ReactNode }) {
   const canWriteEvents = calendarPermission === "readwrite"
 
   const checkConnectionStatus = useCallback(async () => {
-    if (initialCheckDone.current) return
-    initialCheckDone.current = true
-
     try {
-      // Google users are automatically connected via Supabase OAuth
-      if (user?.provider === "google") {
-        setIsConnected(true)
-        setCalendarProvider("google")
-        setCalendarPermission("readwrite")
-        setUserInfo({
-          name: user.name,
-          email: user.email,
-          picture: user.picture,
-        })
-        return
-      }
-
-      // For email users, check if they connected Google Calendar separately
+      // Always check the API for actual Google Calendar tokens
       const response = await fetch("/api/auth/google/status")
       if (!response.ok) {
         setIsConnected(false)
@@ -102,6 +88,7 @@ export function CalendarProvider({ children }: { children: ReactNode }) {
         setCalendarProvider("google")
         setUserInfo(data.userInfo || null)
         setCalendarPermission(data.permission || "readonly")
+        initialCheckDone.current = true
       } else {
         setIsConnected(false)
         setCalendarProvider("none")
@@ -113,7 +100,22 @@ export function CalendarProvider({ children }: { children: ReactNode }) {
       setIsConnected(false)
       setCalendarProvider("none")
     }
-  }, [user])
+  }, [])
+
+  useEffect(() => {
+    if (user && user.provider !== "guest" && !initialCheckDone.current) {
+      checkConnectionStatus()
+    } else if (!user || user.provider === "guest") {
+      // Reset state when no user
+      setIsConnected(false)
+      setCalendarProvider("none")
+      setCalendarPermission(null)
+      setEvents([])
+      setUserInfo(null)
+      initialCheckDone.current = false
+      fetchingEvents.current = false
+    }
+  }, [user, checkConnectionStatus])
 
   useEffect(() => {
     if (isConnected && !fetchingEvents.current && events.length === 0) {
@@ -297,23 +299,6 @@ export function CalendarProvider({ children }: { children: ReactNode }) {
   const clearPendingEvents = useCallback(() => {
     setPendingEvents([])
   }, [])
-
-  useEffect(() => {
-    if (user && user.provider !== "guest") {
-      initialCheckDone.current = false
-      fetchingEvents.current = false
-      checkConnectionStatus()
-    } else {
-      // Reset state when no user
-      setIsConnected(false)
-      setCalendarProvider("none")
-      setCalendarPermission(null)
-      setEvents([])
-      setUserInfo(null)
-      initialCheckDone.current = false
-      fetchingEvents.current = false
-    }
-  }, [user, checkConnectionStatus])
 
   return (
     <CalendarContext.Provider
