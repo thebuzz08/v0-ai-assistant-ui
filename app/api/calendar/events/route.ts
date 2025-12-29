@@ -1,5 +1,6 @@
 import { type NextRequest, NextResponse } from "next/server"
 import { cookies } from "next/headers"
+import { auth, clerkClient } from "@clerk/nextjs/server"
 
 const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID
 const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET
@@ -26,6 +27,23 @@ async function refreshAccessToken(refreshToken: string) {
 }
 
 async function getValidAccessToken(cookieStore: any) {
+  // First try Clerk's Google OAuth token
+  try {
+    const { userId } = await auth()
+
+    if (userId) {
+      const client = await clerkClient()
+      const tokenResponse = await client.users.getUserOauthAccessToken(userId, "oauth_google")
+
+      if (tokenResponse.data && tokenResponse.data.length > 0) {
+        return tokenResponse.data[0].token
+      }
+    }
+  } catch (err) {
+    // Clerk token not available, fall through to cookie check
+  }
+
+  // Fall back to cookie-based tokens
   let accessToken = cookieStore.get("google_access_token")?.value
   const refreshToken = cookieStore.get("google_refresh_token")?.value
 

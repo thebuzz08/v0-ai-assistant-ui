@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation"
 import { BottomNav } from "@/components/bottom-nav"
 import { useNotes } from "@/lib/notes-context"
 import { useCalendar, type CalendarEvent } from "@/lib/calendar-context"
+import { useAuth } from "@/lib/auth-context"
 import { ChevronLeft, ChevronRight, Plus, FileText, Loader2, Calendar, X, Trash2 } from "lucide-react"
 import Link from "next/link"
 
@@ -63,8 +64,9 @@ function getEventDuration(event: CalendarEvent): number {
 export default function SchedulePage() {
   const today = new Date()
   const router = useRouter()
+  const { user } = useAuth()
   const { notes, getNotesForDate } = useNotes()
-  const { events: calendarEvents, isConnected, isLoading, fetchEvents, getEventsForDate } = useCalendar()
+  const { events: calendarEvents, isConnected, isLoading, fetchEvents, getEventsForDate, connectGoogle } = useCalendar()
 
   const [currentMonth, setCurrentMonth] = useState(today.getMonth())
   const [currentYear, setCurrentYear] = useState(today.getFullYear())
@@ -85,6 +87,11 @@ export default function SchedulePage() {
 
   const firstDayOfMonth = new Date(currentYear, currentMonth, 1).getDay()
   const daysInMonth = new Date(currentYear, currentMonth + 1, 0).getDate()
+
+  // Check if user is email-only (needs to manually connect calendar)
+  const isEmailUser = user?.provider === "email"
+
+  const isSelected = false // Declare the variable here
 
   useEffect(() => {
     if (isConnected) {
@@ -112,85 +119,45 @@ export default function SchedulePage() {
     }
   }
 
+  const handleDayClick = (day: number) => {
+    setSelectedDay(day)
+  }
+
   const selectedDate = new Date(currentYear, currentMonth, selectedDay)
-  const selectedEvents = getEventsForDate(selectedDate)
-  const selectedNotes = getNotesForDate(selectedDate)
+  const dayEvents = getEventsForDate(selectedDate)
+  const dayNotes = getNotesForDate(selectedDate)
 
-  const isToday = (day: number) => {
-    return day === today.getDate() && currentMonth === today.getMonth() && currentYear === today.getFullYear()
-  }
-
-  const hasEvents = (day: number) => {
-    const date = new Date(currentYear, currentMonth, day)
-    return getEventsForDate(date).length > 0
-  }
-
-  const hasNotes = (day: number) => {
-    const date = new Date(currentYear, currentMonth, day)
-    return getNotesForDate(date).length > 0
-  }
-
-  const handleNoteClick = (noteId: string) => {
-    router.push(`/notes?id=${noteId}`)
-  }
-
-  const handleOpenAddModal = () => {
-    const selectedDate = new Date(currentYear, currentMonth, selectedDay)
-    setNewEvent({
-      title: "",
-      date: selectedDate.toISOString().split("T")[0],
-      time: "09:00",
-      duration: 60,
-      description: "",
-    })
-    setShowAddModal(true)
-  }
-
-  const handleCreateEvent = async () => {
-    if (!newEvent.title.trim()) return
-
+  const handleAddEvent = async () => {
+    if (!newEvent.title || !newEvent.date) return
     setIsSubmitting(true)
+
     try {
       const response = await fetch("/api/calendar/events", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: newEvent.title,
-          date: newEvent.date,
-          time: newEvent.time || null,
-          duration: newEvent.duration,
-          description: newEvent.description,
-          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        }),
+        body: JSON.stringify(newEvent),
       })
 
       if (response.ok) {
         setShowAddModal(false)
+        setNewEvent({ title: "", date: "", time: "", duration: 60, description: "" })
         const startDate = new Date(currentYear, currentMonth, 1)
         const endDate = new Date(currentYear, currentMonth + 1, 0, 23, 59, 59)
-        await fetchEvents(startDate, endDate)
+        fetchEvents(startDate, endDate)
       }
     } catch (error) {
-      console.error("Failed to create event:", error)
+      console.error("Failed to add event:", error)
     } finally {
       setIsSubmitting(false)
     }
   }
 
-  const handleEventClick = (event: CalendarEvent) => {
-    setSelectedEvent(event)
-    setShowEventModal(true)
-  }
-
-  const handleDeleteEvent = async () => {
-    if (!selectedEvent) return
-
-    setIsSubmitting(true)
+  const handleDeleteEvent = async (eventId: string) => {
     try {
       const response = await fetch("/api/calendar/events", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ eventId: selectedEvent.id }),
+        body: JSON.stringify({ eventId }),
       })
 
       if (response.ok) {
@@ -198,253 +165,237 @@ export default function SchedulePage() {
         setSelectedEvent(null)
         const startDate = new Date(currentYear, currentMonth, 1)
         const endDate = new Date(currentYear, currentMonth + 1, 0, 23, 59, 59)
-        await fetchEvents(startDate, endDate)
+        fetchEvents(startDate, endDate)
       }
     } catch (error) {
       console.error("Failed to delete event:", error)
-    } finally {
-      setIsSubmitting(false)
     }
   }
 
+  const handleConnectCalendar = () => {
+    connectGoogle("readwrite")
+  }
+
   return (
-    <main className="min-h-screen pb-24 relative overflow-hidden">
-      <div
-        className="absolute inset-0 z-0"
-        style={{
-          background: `linear-gradient(to bottom, var(--gradient-start) 0%, var(--gradient-start) 10%, var(--gradient-end) 35%, var(--gradient-end) 100%)`,
-        }}
-      />
-
+    <div className="min-h-screen bg-gradient-to-b from-[#87CEEB] to-[#E0F4FF] pb-24">
       {/* Header */}
-      <header className="pt-14 px-6 pb-2 flex items-center justify-between relative z-10">
-        <h1 className="text-3xl font-bold text-white drop-shadow-sm">Schedule</h1>
-        <button
-          onClick={handleOpenAddModal}
-          disabled={!isConnected}
-          className="w-10 h-10 rounded-full bg-white/30 backdrop-blur-sm flex items-center justify-center disabled:opacity-50 border border-white/40"
-        >
-          <Plus className="w-5 h-5 text-white" />
-        </button>
-      </header>
-
-      <div className="px-6 relative z-10">
-        <div className="bg-white dark:bg-card rounded-2xl p-4 shadow-sm mb-4">
-          {/* Month Navigation */}
-          <div className="flex items-center justify-between mb-4">
-            <button
-              onClick={prevMonth}
-              className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-muted transition-colors"
-            >
-              <ChevronLeft className="w-5 h-5 text-foreground" />
-            </button>
-            <div className="flex items-center gap-2">
-              <h2 className="text-lg font-semibold text-foreground">
-                {MONTHS[currentMonth]} {currentYear}
-              </h2>
-              {isLoading && <Loader2 className="w-4 h-4 animate-spin text-muted-foreground" />}
-            </div>
-            <button
-              onClick={nextMonth}
-              className="w-8 h-8 rounded-full flex items-center justify-center hover:bg-muted transition-colors"
-            >
-              <ChevronRight className="w-5 h-5 text-foreground" />
-            </button>
-          </div>
-
-          {/* Day Headers */}
-          <div className="grid grid-cols-7 gap-1 mb-2">
-            {DAYS.map((day) => (
-              <div key={day} className="text-center text-xs font-medium text-muted-foreground py-2">
-                {day}
-              </div>
-            ))}
-          </div>
-
-          {/* Calendar Grid */}
-          <div className="grid grid-cols-7 gap-1">
-            {Array.from({ length: firstDayOfMonth }).map((_, i) => (
-              <div key={`empty-${i}`} className="aspect-square" />
-            ))}
-
-            {Array.from({ length: daysInMonth }).map((_, i) => {
-              const day = i + 1
-              const selected = day === selectedDay
-              const todayDay = isToday(day)
-              const hasEvent = hasEvents(day)
-              const hasNote = hasNotes(day)
-
-              return (
-                <button
-                  key={day}
-                  onClick={() => setSelectedDay(day)}
-                  className={`aspect-square rounded-full flex flex-col items-center justify-center text-sm font-medium transition-all relative ${
-                    selected
-                      ? "bg-[var(--apple-blue)] text-white"
-                      : todayDay
-                        ? "bg-[var(--apple-blue)]/20 text-[var(--apple-blue)]"
-                        : "text-foreground hover:bg-muted"
-                  }`}
-                >
-                  {day}
-                  {(hasEvent || hasNote) && !selected && (
-                    <div className="absolute bottom-1 flex gap-0.5">
-                      {hasEvent && <div className="w-1 h-1 rounded-full bg-[var(--apple-blue)]" />}
-                      {hasNote && <div className="w-1 h-1 rounded-full bg-[var(--apple-orange)]" />}
-                    </div>
-                  )}
-                </button>
-              )
-            })}
-          </div>
-
-          {/* Legend */}
-          <div className="flex items-center justify-center gap-4 mt-4 pt-3 border-t border-border">
-            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <div className="w-2 h-2 rounded-full bg-[var(--apple-blue)]" />
-              Events
-            </div>
-            <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <div className="w-2 h-2 rounded-full bg-[var(--apple-orange)]" />
-              Notes
-            </div>
-          </div>
+      <div className="sticky top-0 z-10 bg-gradient-to-b from-[#87CEEB] to-[#87CEEB]/80 backdrop-blur-sm">
+        <div className="flex items-center justify-between p-4">
+          <button onClick={prevMonth} className="p-2 hover:bg-white/20 rounded-full transition-colors">
+            <ChevronLeft className="w-6 h-6 text-gray-700" />
+          </button>
+          <h1 className="text-xl font-semibold text-gray-800">
+            {MONTHS[currentMonth]} {currentYear}
+          </h1>
+          <button onClick={nextMonth} className="p-2 hover:bg-white/20 rounded-full transition-colors">
+            <ChevronRight className="w-6 h-6 text-gray-700" />
+          </button>
         </div>
 
-        <div className="bg-white dark:bg-card rounded-2xl shadow-sm overflow-hidden">
-          <div className="p-4 border-b border-border">
-            <h2 className="text-lg font-semibold text-foreground">
-              {selectedDay === today.getDate() && currentMonth === today.getMonth()
-                ? "Today"
-                : `${MONTHS[currentMonth]} ${selectedDay}`}
-            </h2>
-          </div>
-
-          <div className="p-4 space-y-3 min-h-[200px]">
-            {/* Notes Section */}
-            {selectedNotes.length > 0 && (
-              <div className="mb-4">
-                <h3 className="text-sm font-medium text-muted-foreground mb-2">Notes</h3>
-                <div className="space-y-2">
-                  {selectedNotes.map((note) => (
-                    <div
-                      key={note.id}
-                      className="p-3 bg-muted/50 rounded-xl flex items-center gap-3 cursor-pointer hover:bg-muted transition-colors"
-                      onClick={() => handleNoteClick(note.id)}
-                    >
-                      <div className="w-10 h-10 rounded-full bg-[var(--apple-orange)]/20 flex items-center justify-center">
-                        <FileText className="w-5 h-5 text-[var(--apple-orange)]" />
-                      </div>
-                      <div className="flex-1">
-                        <h4 className="font-medium text-foreground text-sm">{note.title}</h4>
-                        <p className="text-xs text-muted-foreground">
-                          {note.duration} · {note.mainIdeas?.length || 0} topics
-                        </p>
-                      </div>
-                      <ChevronRight className="w-5 h-5 text-muted-foreground" />
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Events Section */}
-            {!isConnected ? (
-              <Link href="/settings" className="block">
-                <div className="p-6 text-center bg-muted/30 rounded-xl">
-                  <Calendar className="w-10 h-10 text-[var(--apple-blue)] mx-auto mb-2" />
-                  <p className="text-foreground font-medium text-sm mb-1">Connect Google Calendar</p>
-                  <p className="text-muted-foreground text-xs">Tap to sync your schedule</p>
-                </div>
-              </Link>
-            ) : selectedEvents.length > 0 ? (
-              <div className="space-y-2">
-                <h3 className="text-sm font-medium text-muted-foreground">Events</h3>
-                {selectedEvents.map((event) => (
-                  <div
-                    key={event.id}
-                    className="p-3 bg-muted/50 rounded-xl flex items-center gap-3 cursor-pointer hover:bg-muted transition-colors"
-                    onClick={() => handleEventClick(event)}
-                  >
-                    <div className={`w-1 h-12 rounded-full ${getEventColor(event.colorId)}`} />
-                    <div className="flex-1">
-                      <h3 className="font-medium text-foreground text-sm">{event.summary}</h3>
-                      <p className="text-xs text-muted-foreground">
-                        {formatEventTime(event)}
-                        {getEventDuration(event) > 0 && ` · ${getEventDuration(event)} min`}
-                      </p>
-                      {event.location && <p className="text-xs text-muted-foreground truncate">{event.location}</p>}
-                    </div>
-                    <ChevronRight className="w-5 h-5 text-muted-foreground" />
-                  </div>
-                ))}
-              </div>
-            ) : selectedNotes.length === 0 ? (
-              <div className="p-6 text-center">
-                <p className="text-muted-foreground text-sm">No events or notes</p>
-              </div>
-            ) : null}
-          </div>
+        {/* Days of week */}
+        <div className="grid grid-cols-7 px-2 pb-2">
+          {DAYS.map((day) => (
+            <div key={day} className="text-center text-xs font-medium text-gray-500">
+              {day}
+            </div>
+          ))}
         </div>
       </div>
 
+      {/* Calendar grid */}
+      <div className="px-2">
+        <div className="grid grid-cols-7 gap-1">
+          {/* Empty cells for days before the first of the month */}
+          {Array.from({ length: firstDayOfMonth }).map((_, index) => (
+            <div key={`empty-${index}`} className="aspect-square" />
+          ))}
+
+          {/* Days of the month */}
+          {Array.from({ length: daysInMonth }).map((_, index) => {
+            const day = index + 1
+            const date = new Date(currentYear, currentMonth, day)
+            const isToday =
+              day === today.getDate() && currentMonth === today.getMonth() && currentYear === today.getFullYear()
+            const events = getEventsForDate(date)
+            const hasEvents = events.length > 0
+
+            return (
+              <button
+                key={day}
+                onClick={() => handleDayClick(day)}
+                className={`aspect-square rounded-xl flex flex-col items-center justify-center relative transition-all ${
+                  day === selectedDay
+                    ? "bg-[#1a7f7f] text-white shadow-lg scale-105"
+                    : isToday
+                      ? "bg-white/60 text-[#1a7f7f] font-bold"
+                      : "hover:bg-white/40 text-gray-700"
+                }`}
+              >
+                <span className="text-sm">{day}</span>
+                {hasEvents && (
+                  <div className="flex gap-0.5 mt-0.5">
+                    {events.slice(0, 3).map((event, i) => (
+                      <div
+                        key={i}
+                        className={`w-1 h-1 rounded-full ${day === selectedDay ? "bg-white/80" : getEventColor(event.colorId)}`}
+                      />
+                    ))}
+                  </div>
+                )}
+              </button>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Selected day events */}
+      <div className="mt-4 px-4">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-lg font-semibold text-gray-800">
+            {selectedDate.toLocaleDateString("en-US", { weekday: "long", month: "short", day: "numeric" })}
+          </h2>
+          {isConnected && (
+            <button
+              onClick={() => {
+                setNewEvent({
+                  ...newEvent,
+                  date: `${currentYear}-${String(currentMonth + 1).padStart(2, "0")}-${String(selectedDay).padStart(2, "0")}`,
+                })
+                setShowAddModal(true)
+              }}
+              className="p-2 bg-[#1a7f7f] text-white rounded-full hover:bg-[#15696a] transition-colors"
+            >
+              <Plus className="w-5 h-5" />
+            </button>
+          )}
+        </div>
+
+        {isLoading ? (
+          <div className="flex items-center justify-center py-8">
+            <Loader2 className="w-6 h-6 animate-spin text-[#1a7f7f]" />
+          </div>
+        ) : dayEvents.length > 0 || dayNotes.length > 0 ? (
+          <div className="space-y-2">
+            {dayEvents.map((event) => (
+              <button
+                key={event.id}
+                onClick={() => {
+                  setSelectedEvent(event)
+                  setShowEventModal(true)
+                }}
+                className="w-full text-left bg-white/80 backdrop-blur-sm rounded-xl p-3 shadow-sm hover:shadow-md transition-all"
+              >
+                <div className="flex items-start gap-3">
+                  <div
+                    className={`w-1 h-full min-h-[40px] rounded-full ${event.colorId === selectedDay ? "bg-white/80" : getEventColor(event.colorId)}`}
+                  />
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium text-gray-800 truncate">{event.summary}</p>
+                    <p className="text-sm text-gray-500">{formatEventTime(event)}</p>
+                    {event.location && <p className="text-xs text-gray-400 truncate mt-1">{event.location}</p>}
+                  </div>
+                </div>
+              </button>
+            ))}
+            {dayNotes.map((note) => (
+              <Link
+                key={note.id}
+                href={`/notes/${note.id}`}
+                className="block bg-white/80 backdrop-blur-sm rounded-xl p-3 shadow-sm hover:shadow-md transition-all"
+              >
+                <div className="flex items-start gap-3">
+                  <FileText className="w-5 h-5 text-[#1a7f7f] flex-shrink-0 mt-0.5" />
+                  <div className="flex-1 min-w-0">
+                    <p className="font-medium text-gray-800 truncate">{note.title}</p>
+                    <p className="text-sm text-gray-500 line-clamp-2">{note.content}</p>
+                  </div>
+                </div>
+              </Link>
+            ))}
+          </div>
+        ) : (
+          <div className="text-center py-8 text-gray-500">
+            <Calendar className="w-12 h-12 mx-auto mb-2 opacity-50" />
+            <p>No events for this day</p>
+          </div>
+        )}
+      </div>
+
+      {/* Connect Calendar Banner - Only show for email users who haven't connected */}
+      {!isConnected && isEmailUser && (
+        <div className="fixed bottom-20 left-4 right-4 bg-white/90 backdrop-blur-sm rounded-2xl p-4 shadow-lg border border-gray-200">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-full bg-[#1a7f7f]/10 flex items-center justify-center flex-shrink-0">
+              <Calendar className="w-5 h-5 text-[#1a7f7f]" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <p className="font-medium text-gray-800">Connect Google Calendar</p>
+              <p className="text-sm text-gray-500">Sync your events and let the assistant help manage your schedule</p>
+            </div>
+            <button
+              onClick={handleConnectCalendar}
+              className="px-4 py-2 bg-[#1a7f7f] text-white text-sm font-medium rounded-lg hover:bg-[#15696a] transition-colors flex-shrink-0"
+            >
+              Connect
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Add Event Modal */}
       {showAddModal && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-end justify-center">
-          <div className="bg-white dark:bg-card w-full max-w-lg rounded-t-3xl p-6 animate-in slide-in-from-bottom duration-300">
+        <div className="fixed inset-0 bg-black/50 flex items-end justify-center z-50">
+          <div className="bg-white rounded-t-3xl w-full max-w-lg p-6 animate-slide-up">
             <div className="flex items-center justify-between mb-6">
-              <h2 className="text-xl font-semibold text-foreground">New Event</h2>
-              <button
-                onClick={() => setShowAddModal(false)}
-                className="w-8 h-8 rounded-full bg-muted flex items-center justify-center"
-              >
-                <X className="w-5 h-5 text-muted-foreground" />
+              <h2 className="text-xl font-semibold text-gray-800">New Event</h2>
+              <button onClick={() => setShowAddModal(false)} className="p-2 hover:bg-gray-100 rounded-full">
+                <X className="w-5 h-5 text-gray-500" />
               </button>
             </div>
 
             <div className="space-y-4">
               <div>
-                <label className="text-sm text-muted-foreground mb-1 block">Title</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Title</label>
                 <input
                   type="text"
                   value={newEvent.title}
                   onChange={(e) => setNewEvent({ ...newEvent, title: e.target.value })}
+                  className="w-full px-4 py-3 bg-gray-100 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#1a7f7f]"
                   placeholder="Event title"
-                  className="w-full px-4 py-3 rounded-xl bg-muted text-foreground placeholder:text-muted-foreground outline-none focus:ring-2 focus:ring-[var(--apple-blue)]"
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="text-sm text-muted-foreground mb-1 block">Date</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Date</label>
                   <input
                     type="date"
                     value={newEvent.date}
                     onChange={(e) => setNewEvent({ ...newEvent, date: e.target.value })}
-                    className="w-full px-4 py-3 rounded-xl bg-muted text-foreground outline-none focus:ring-2 focus:ring-[var(--apple-blue)]"
+                    className="w-full px-4 py-3 bg-gray-100 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#1a7f7f]"
                   />
                 </div>
                 <div>
-                  <label className="text-sm text-muted-foreground mb-1 block">Time</label>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">Time</label>
                   <input
                     type="time"
                     value={newEvent.time}
                     onChange={(e) => setNewEvent({ ...newEvent, time: e.target.value })}
-                    className="w-full px-4 py-3 rounded-xl bg-muted text-foreground outline-none focus:ring-2 focus:ring-[var(--apple-blue)]"
+                    className="w-full px-4 py-3 bg-gray-100 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#1a7f7f]"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="text-sm text-muted-foreground mb-1 block">Duration (minutes)</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Duration (minutes)</label>
                 <select
                   value={newEvent.duration}
-                  onChange={(e) => setNewEvent({ ...newEvent, duration: Number(e.target.value) })}
-                  className="w-full px-4 py-3 rounded-xl bg-muted text-foreground outline-none focus:ring-2 focus:ring-[var(--apple-blue)]"
+                  onChange={(e) => setNewEvent({ ...newEvent, duration: Number.parseInt(e.target.value) })}
+                  className="w-full px-4 py-3 bg-gray-100 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#1a7f7f]"
                 >
-                  <option value={15}>15 min</option>
-                  <option value={30}>30 min</option>
-                  <option value={45}>45 min</option>
+                  <option value={15}>15 minutes</option>
+                  <option value={30}>30 minutes</option>
+                  <option value={45}>45 minutes</option>
                   <option value={60}>1 hour</option>
                   <option value={90}>1.5 hours</option>
                   <option value={120}>2 hours</option>
@@ -452,28 +403,28 @@ export default function SchedulePage() {
               </div>
 
               <div>
-                <label className="text-sm text-muted-foreground mb-1 block">Description (optional)</label>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Description (optional)</label>
                 <textarea
                   value={newEvent.description}
                   onChange={(e) => setNewEvent({ ...newEvent, description: e.target.value })}
+                  className="w-full px-4 py-3 bg-gray-100 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#1a7f7f] resize-none"
+                  rows={3}
                   placeholder="Add description..."
-                  rows={2}
-                  className="w-full px-4 py-3 rounded-xl bg-muted text-foreground placeholder:text-muted-foreground outline-none focus:ring-2 focus:ring-[var(--apple-blue)] resize-none"
                 />
               </div>
 
               <button
-                onClick={handleCreateEvent}
-                disabled={!newEvent.title.trim() || isSubmitting}
-                className="w-full py-3 rounded-xl bg-[var(--apple-blue)] text-white font-medium disabled:opacity-50 flex items-center justify-center gap-2"
+                onClick={handleAddEvent}
+                disabled={!newEvent.title || !newEvent.date || isSubmitting}
+                className="w-full py-4 bg-[#1a7f7f] text-white font-semibold rounded-xl hover:bg-[#15696a] transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
               >
                 {isSubmitting ? (
                   <>
                     <Loader2 className="w-5 h-5 animate-spin" />
-                    Creating...
+                    Adding...
                   </>
                 ) : (
-                  "Create Event"
+                  "Add Event"
                 )}
               </button>
             </div>
@@ -481,54 +432,49 @@ export default function SchedulePage() {
         </div>
       )}
 
-      {/* Event Details Modal */}
+      {/* Event Detail Modal */}
       {showEventModal && selectedEvent && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-end justify-center">
-          <div className="bg-white dark:bg-card w-full max-w-lg rounded-t-3xl p-6 animate-in slide-in-from-bottom duration-300">
+        <div className="fixed inset-0 bg-black/50 flex items-end justify-center z-50">
+          <div className="bg-white rounded-t-3xl w-full max-w-lg p-6 animate-slide-up">
             <div className="flex items-center justify-between mb-6">
-              <h2 className="text-xl font-semibold text-foreground">Event Details</h2>
-              <button
-                onClick={() => {
-                  setShowEventModal(false)
-                  setSelectedEvent(null)
-                }}
-                className="w-8 h-8 rounded-full bg-muted flex items-center justify-center"
-              >
-                <X className="w-5 h-5 text-muted-foreground" />
+              <h2 className="text-xl font-semibold text-gray-800">Event Details</h2>
+              <button onClick={() => setShowEventModal(false)} className="p-2 hover:bg-gray-100 rounded-full">
+                <X className="w-5 h-5 text-gray-500" />
               </button>
             </div>
 
             <div className="space-y-4">
               <div className="flex items-start gap-3">
-                <div className={`w-1 h-16 rounded-full ${getEventColor(selectedEvent.colorId)}`} />
-                <div className="flex-1">
-                  <h3 className="text-lg font-semibold text-foreground">{selectedEvent.summary}</h3>
-                  <p className="text-sm text-muted-foreground">
+                <div className={`w-1 h-full min-h-[60px] rounded-full ${getEventColor(selectedEvent.colorId)}`} />
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-800">{selectedEvent.summary}</h3>
+                  <p className="text-gray-500">
                     {formatEventTime(selectedEvent)}
-                    {getEventDuration(selectedEvent) > 0 && ` · ${getEventDuration(selectedEvent)} min`}
+                    {getEventDuration(selectedEvent) > 0 && ` (${getEventDuration(selectedEvent)} min)`}
                   </p>
-                  {selectedEvent.location && (
-                    <p className="text-sm text-muted-foreground mt-1">{selectedEvent.location}</p>
-                  )}
-                  {selectedEvent.description && (
-                    <p className="text-sm text-foreground mt-3">{selectedEvent.description}</p>
-                  )}
                 </div>
               </div>
 
+              {selectedEvent.location && (
+                <div>
+                  <p className="text-sm text-gray-500">Location</p>
+                  <p className="text-gray-800">{selectedEvent.location}</p>
+                </div>
+              )}
+
+              {selectedEvent.description && (
+                <div>
+                  <p className="text-sm text-gray-500">Description</p>
+                  <p className="text-gray-800">{selectedEvent.description}</p>
+                </div>
+              )}
+
               <button
-                onClick={handleDeleteEvent}
-                disabled={isSubmitting}
-                className="w-full py-3 rounded-xl bg-destructive/10 text-destructive font-medium flex items-center justify-center gap-2"
+                onClick={() => handleDeleteEvent(selectedEvent.id)}
+                className="w-full py-3 bg-red-50 text-red-500 font-medium rounded-xl hover:bg-red-100 transition-colors flex items-center justify-center gap-2"
               >
-                {isSubmitting ? (
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                ) : (
-                  <>
-                    <Trash2 className="w-5 h-5" />
-                    Delete Event
-                  </>
-                )}
+                <Trash2 className="w-5 h-5" />
+                Delete Event
               </button>
             </div>
           </div>
@@ -536,6 +482,6 @@ export default function SchedulePage() {
       )}
 
       <BottomNav />
-    </main>
+    </div>
   )
 }
