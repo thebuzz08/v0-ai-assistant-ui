@@ -2,8 +2,8 @@ import Link from "next/link"
 import { ArrowLeft } from "lucide-react"
 
 export const metadata = {
-  title: "Privacy Policy - Proactive Assistant",
-  description: "Privacy Policy for Proactive Assistant by Omnisound",
+  title: "Privacy Policy - Omnisound",
+  description: "Privacy Policy for Omnisound",
 }
 
 export default function PrivacyPolicyPage() {
@@ -30,9 +30,9 @@ export default function PrivacyPolicyPage() {
           <section className="mb-8">
             <h2 className="text-xl font-semibold text-zinc-900 dark:text-white mb-4">1. Introduction</h2>
             <p className="text-zinc-600 dark:text-zinc-300 mb-4">
-              Welcome to Proactive Assistant ("we," "our," or "us"), operated by Omnisound. This Privacy Policy explains
-              how we collect, use, disclose, and safeguard your information when you use our AI-powered assistant
-              application available at omnisound.xyz (the "Service").
+              Welcome to Omnisound ("we," "our," or "us"). This Privacy Policy explains how we collect, use, disclose,
+              and safeguard your information when you use our AI-powered assistant application available at
+              earai.vercel.app (the "Service").
             </p>
             <p className="text-zinc-600 dark:text-zinc-300 mb-4">
               We are committed to protecting your privacy and handling your data in an open and transparent manner. By
@@ -114,9 +114,7 @@ export default function PrivacyPolicyPage() {
             </h2>
             <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-xl p-6 mb-4">
               <p className="text-zinc-700 dark:text-zinc-200 mb-4">
-                <strong>
-                  Proactive Assistant's use and transfer of information received from Google APIs adheres to the
-                </strong>{" "}
+                <strong>Omnisound's use and transfer of information received from Google APIs adheres to the</strong>{" "}
                 <a
                   href="https://developers.google.com/terms/api-services-user-data-policy#additional_requirements_for_specific_api_scopes"
                   target="_blank"
@@ -134,7 +132,7 @@ export default function PrivacyPolicyPage() {
             </h3>
             <p className="text-zinc-600 dark:text-zinc-300 mb-4">We access Google Calendar data solely to:</p>
             <ul className="list-disc pl-6 text-zinc-600 dark:text-zinc-300 mb-4 space-y-2">
-              <li>Display your upcoming events within the Proactive Assistant app</li>
+              <li>Display your upcoming events within the Omnisound app</li>
               <li>Create, modify, or delete calendar events at your explicit request</li>
               <li>Provide proactive reminders about your schedule</li>
               <li>Help you manage your time through AI-powered suggestions</li>
@@ -332,15 +330,15 @@ export default function PrivacyPolicyPage() {
                 <strong>Email:</strong> privacy@omnisound.xyz
               </li>
               <li>
-                <strong>Website:</strong> https://omnisound.xyz
+                <strong>Website:</strong> https://earai.vercel.app
               </li>
             </ul>
           </section>
 
           <section className="border-t border-zinc-200 dark:border-zinc-800 pt-8">
             <p className="text-sm text-zinc-500 dark:text-zinc-400">
-              By using Proactive Assistant, you acknowledge that you have read, understood, and agree to be bound by
-              this Privacy Policy.
+              By using Omnisound, you acknowledge that you have read, understood, and agree to be bound by this Privacy
+              Policy.
             </p>
           </section>
         </div>

@@ -2,8 +2,8 @@ import Link from "next/link"
 import { ArrowLeft } from "lucide-react"
 
 export const metadata = {
-  title: "Terms of Service - Proactive Assistant",
-  description: "Terms of Service for Proactive Assistant by Omnisound",
+  title: "Terms of Service - Omnisound",
+  description: "Terms of Service for Omnisound",
 }
 
 export default function TermsOfServicePage() {
@@ -30,9 +30,9 @@ export default function TermsOfServicePage() {
           <section className="mb-8">
             <h2 className="text-xl font-semibold text-zinc-900 dark:text-white mb-4">1. Acceptance of Terms</h2>
             <p className="text-zinc-600 dark:text-zinc-300 mb-4">
-              By accessing or using Proactive Assistant ("Service"), operated by Omnisound ("we," "our," or "us"), you
-              agree to be bound by these Terms of Service ("Terms"). If you do not agree to these Terms, please do not
-              use the Service.
+              By accessing or using Omnisound ("Service"), operated by Omnisound ("we," "our," or "us"), you agree to be
+              bound by these Terms of Service ("Terms"). If you do not agree to these Terms, please do not use the
+              Service.
             </p>
             <p className="text-zinc-600 dark:text-zinc-300">
               These Terms apply to all visitors, users, and others who access or use the Service. By using the Service,
@@ -43,7 +43,7 @@ export default function TermsOfServicePage() {
           <section className="mb-8">
             <h2 className="text-xl font-semibold text-zinc-900 dark:text-white mb-4">2. Description of Service</h2>
             <p className="text-zinc-600 dark:text-zinc-300 mb-4">
-              Proactive Assistant is an AI-powered personal assistant application that provides:
+              Omnisound is an AI-powered personal assistant application that provides:
             </p>
             <ul className="list-disc pl-6 text-zinc-600 dark:text-zinc-300 mb-4 space-y-2">
               <li>Voice-based interaction and transcription</li>
@@ -300,15 +300,15 @@ export default function TermsOfServicePage() {
                 <strong>Email:</strong> legal@omnisound.xyz
               </li>
               <li>
-                <strong>Website:</strong> https://omnisound.xyz
+                <strong>Website:</strong> https://earai.vercel.app
               </li>
             </ul>
           </section>
 
           <section className="border-t border-zinc-200 dark:border-zinc-800 pt-8">
             <p className="text-sm text-zinc-500 dark:text-zinc-400">
-              By using Proactive Assistant, you acknowledge that you have read, understood, and agree to be bound by
-              these Terms of Service.
+              By using Omnisound, you acknowledge that you have read, understood, and agree to be bound by these Terms
+              of Service.
             </p>
           </section>
         </div>
