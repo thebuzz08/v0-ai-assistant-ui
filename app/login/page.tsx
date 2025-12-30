@@ -3,6 +3,7 @@
 import type React from "react"
 import { useState, useEffect, Suspense } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
+import Link from "next/link"
 import { useAuth } from "@/lib/auth-context"
 import { useSignIn, useSignUp } from "@clerk/nextjs"
 import { Sparkles, Mail, Eye, EyeOff, Loader2, ArrowLeft } from "lucide-react"
@@ -354,6 +355,19 @@ function LoginContent() {
             Continue as Guest
           </button>
         )}
+
+        <div className="mt-6 text-center text-sm text-white/60">
+          <p>
+            By continuing, you agree to our{" "}
+            <Link href="/terms" className="text-white/80 hover:text-white underline">
+              Terms of Service
+            </Link>{" "}
+            and{" "}
+            <Link href="/privacy" className="text-white/80 hover:text-white underline">
+              Privacy Policy
+            </Link>
+          </p>
+        </div>
       </div>
     </main>
   )

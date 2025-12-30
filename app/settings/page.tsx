@@ -19,6 +19,7 @@ import {
   Bell,
   Shield,
   HelpCircle,
+  Scale,
 } from "lucide-react"
 import Link from "next/link"
 
@@ -266,15 +267,31 @@ export default function SettingsPage() {
                 <ChevronRight className="w-5 h-5 text-gray-400" />
               </button>
 
-              <button className="w-full flex items-center justify-between p-4 hover:bg-white/50 transition-colors">
+              <Link
+                href="/privacy"
+                className="w-full flex items-center justify-between p-4 hover:bg-white/50 transition-colors"
+              >
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center">
                     <Shield className="w-5 h-5 text-green-600" />
                   </div>
-                  <span className="font-medium text-gray-800">Privacy</span>
+                  <span className="font-medium text-gray-800">Privacy Policy</span>
                 </div>
                 <ChevronRight className="w-5 h-5 text-gray-400" />
-              </button>
+              </Link>
+
+              <Link
+                href="/terms"
+                className="w-full flex items-center justify-between p-4 hover:bg-white/50 transition-colors"
+              >
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center">
+                    <Scale className="w-5 h-5 text-indigo-600" />
+                  </div>
+                  <span className="font-medium text-gray-800">Terms of Service</span>
+                </div>
+                <ChevronRight className="w-5 h-5 text-gray-400" />
+              </Link>
 
               <button className="w-full flex items-center justify-between p-4 hover:bg-white/50 transition-colors">
                 <div className="flex items-center gap-3">
