@@ -22,6 +22,7 @@ import {
   Square,
 } from "lucide-react"
 import { useMicrophone } from "@/lib/microphone-context"
+import { useRealtimeVoice } from "@/lib/realtime-voice-context"
 import { useCalendar } from "@/lib/calendar-context"
 import { useNotes } from "@/lib/notes-context"
 import { useAuth } from "@/lib/auth-context"
@@ -40,23 +41,40 @@ const DEFAULT_WIDGETS: WidgetType[] = ["transcript", "instructions"]
 export default function HomePage() {
   const router = useRouter()
   const { user, isLoading: authLoading } = useAuth()
+
   const {
-    isListening,
-    startListening,
-    stopListening,
+    isListening: isListeningStandard,
+    startListening: startListeningStandard,
+    stopListening: stopListeningStandard,
     setOnConversationComplete,
     setNotesContext,
     setCalendarContext,
-    transcript,
+    transcript: transcriptStandard,
     interimTranscript,
     currentParagraph,
     isProcessing,
-    isSpeaking,
-    customInstructions,
-    setCustomInstructions,
+    isSpeaking: isSpeakingStandard,
+    customInstructions: customInstructionsStandard,
+    setCustomInstructions: setCustomInstructionsStandard,
   } = useMicrophone()
+
+  const {
+    isConnected: isRealtimeConnected,
+    isListening: isListeningRealtime,
+    audioLevel: audioLevelRealtime,
+    connect: connectRealtime,
+    disconnect: disconnectRealtime,
+    transcript: transcriptRealtime,
+    isSpeaking: isSpeakingRealtime,
+    customInstructions: customInstructionsRealtime,
+    setCustomInstructions: setCustomInstructionsRealtime,
+  } = useRealtimeVoice()
+
   const { isConnected, events, fetchEvents, userInfo, getEventsForDate, checkConnectionStatus } = useCalendar()
   const { notes, addNote } = useNotes()
+
+  const [useRealtimeMode, setUseRealtimeMode] = useState(false)
+
   const [showPulse, setShowPulse] = useState(false)
   const transcriptContainerRef = useRef<HTMLDivElement>(null)
   const [showInstructionsModal, setShowInstructionsModal] = useState(false)
@@ -78,6 +96,9 @@ export default function HomePage() {
   // Drag state
   const [draggedWidget, setDraggedWidget] = useState<WidgetType | null>(null)
   const [dragOverWidget, setDragOverWidget] = useState<WidgetType | null>(null)
+
+  const customInstructions = useRealtimeMode ? customInstructionsRealtime : customInstructionsStandard
+  const setCustomInstructions = useRealtimeMode ? setCustomInstructionsRealtime : setCustomInstructionsStandard
 
   useEffect(() => {
     checkConnectionStatus()
@@ -105,7 +126,7 @@ export default function HomePage() {
     if (showInstructionsModal) {
       setInstructionsInput(customInstructions || "")
     }
-  }, [showInstructionsModal, customInstructions])
+  }, [showInstructionsModal])
 
   // Note recording timer
   useEffect(() => {
@@ -194,18 +215,45 @@ export default function HomePage() {
     return "?"
   }
 
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("useRealtimeMode")
+      if (saved !== null) {
+        setUseRealtimeMode(saved === "true")
+      }
+    }
+  }, [])
+
+  const isListening = useRealtimeMode ? isListeningRealtime : isListeningStandard
+  const isSpeaking = useRealtimeMode ? isSpeakingRealtime : isSpeakingStandard
+  const transcript = useRealtimeMode ? transcriptRealtime : transcriptStandard
+
   const handleToggle = async () => {
-    if (isListening) {
-      stopListening()
+    if (useRealtimeMode) {
+      // Realtime mode
+      if (isListeningRealtime) {
+        disconnectRealtime()
+      } else {
+        await connectRealtime()
+      }
     } else {
-      await startListening()
+      // Standard mode
+      if (isListeningStandard) {
+        stopListeningStandard()
+      } else {
+        await startListeningStandard()
+      }
     }
   }
 
   const getStatusText = () => {
     if (isSpeaking) return "AI speaking..."
+    if (useRealtimeMode) {
+      if (isRealtimeConnected) return isListeningRealtime ? "Tap to pause" : "Tap to start"
+      return "Connecting..."
+    }
     if (isProcessing) return "Processing..."
-    if (isListening) return "Tap to pause"
+    if (isListeningStandard) return "Tap to pause"
     return "Tap to start listening"
   }
 
@@ -234,7 +282,7 @@ export default function HomePage() {
     setNoteRecordingTime(0)
     setIsRecordingNote(true)
     if (!isListening) {
-      await startListening()
+      await handleToggle()
     }
   }
 
