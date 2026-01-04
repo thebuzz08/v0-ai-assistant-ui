@@ -147,7 +147,6 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
         const decoder = new TextDecoder()
         let fullAnswer = ""
         let isQuestion = false
-        let firstChunkSpoken = false
 
         while (true) {
           const { done, value } = await reader.read()
@@ -165,34 +164,30 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
                 fullAnswer = data.answer || ""
               } else if (data.chunk) {
                 streamingTextRef.current += data.chunk
-
-                if (
-                  !firstChunkSpoken &&
-                  streamingTextRef.current.length > 2 &&
-                  !streamingTextRef.current.startsWith("NOT_A_QUESTION") &&
-                  !streamingTextRef.current.startsWith("UNKNOWN")
-                ) {
-                  firstChunkSpoken = true
-                  // Clear for new input
-                  currentParagraphRef.current = ""
-                  setCurrentParagraph("")
-                }
               }
             } catch {}
           }
         }
 
-        // Final handling
         if (isQuestion && fullAnswer) {
+          // Clear current paragraph immediately so next speech doesn't include old text
+          currentParagraphRef.current = ""
+          setCurrentParagraph("")
+
           setTranscript((prev) => [
             ...prev,
             { speaker: "user", text: paragraph },
             { speaker: "assistant", text: fullAnswer },
           ])
           speakText(fullAnswer)
+        } else {
+          currentParagraphRef.current = ""
+          setCurrentParagraph("")
         }
       } catch (error) {
         console.error("[v0] Error checking question:", error)
+        currentParagraphRef.current = ""
+        setCurrentParagraph("")
       } finally {
         setIsProcessing(false)
         streamingTextRef.current = ""
