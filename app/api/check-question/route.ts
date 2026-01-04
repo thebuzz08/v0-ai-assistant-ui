@@ -1,6 +1,63 @@
-import { GoogleGenAI } from "@google/genai"
+import Groq from "groq-sdk"
 
-const ai = new GoogleGenAI({ apiKey: process.env.GOOGLE_GENERATIVE_AI_API_KEY })
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY })
+
+function needsWebSearch(text: string): boolean {
+  const searchKeywords = [
+    "today",
+    "yesterday",
+    "this week",
+    "this month",
+    "this year",
+    "recent",
+    "latest",
+    "current",
+    "now",
+    "2024",
+    "2025",
+    "2026",
+    "news",
+    "happened",
+    "stock",
+    "price",
+    "weather",
+    "score",
+    "won",
+    "died",
+    "released",
+    "announced",
+    "launched",
+  ]
+  const lowerText = text.toLowerCase()
+  return searchKeywords.some((keyword) => lowerText.includes(keyword))
+}
+
+async function searchTavily(query: string): Promise<string> {
+  const apiKey = process.env.TAVILY_API_KEY
+  if (!apiKey) return ""
+
+  try {
+    const response = await fetch("https://api.tavily.com/search", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        api_key: apiKey,
+        query,
+        search_depth: "basic",
+        max_results: 3,
+      }),
+    })
+
+    const data = await response.json()
+    if (data.results && data.results.length > 0) {
+      return data.results.map((r: { title: string; content: string }) => `${r.title}: ${r.content}`).join("\n")
+    }
+    return ""
+  } catch (error) {
+    console.error("[v0] Tavily search error:", error)
+    return ""
+  }
+}
 
 export async function POST(request: Request) {
   try {
@@ -10,70 +67,53 @@ export async function POST(request: Request) {
       return Response.json({ isComplete: false, isQuestion: false, answer: null })
     }
 
-    const completenessCheck = await ai.models.generateContent({
-      model: "gemini-2.0-flash",
-      contents: `Analyze if this speech transcript is a COMPLETE question or statement, or if it's INCOMPLETE (user is still speaking mid-sentence).
-
-Examples:
-- "what is" → INCOMPLETE (missing the subject)
-- "who is the" → INCOMPLETE (missing the subject)  
-- "what time" → INCOMPLETE (missing context)
-- "how do I" → INCOMPLETE (missing the action)
-- "what is 3+3" → COMPLETE
-- "who is Elon Musk" → COMPLETE
-- "capital of France" → COMPLETE
-- "what happened yesterday" → COMPLETE
-- "hello" → COMPLETE (it's a complete statement)
-- "the weather is nice" → COMPLETE
-
-Respond with ONLY one word: COMPLETE or INCOMPLETE
-
-Text: "${text}"`,
-      config: {
-        temperature: 0,
-        maxOutputTokens: 10,
-      },
+    const completenessCheck = await groq.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages: [
+        {
+          role: "system",
+          content: `Determine if this speech is COMPLETE or INCOMPLETE (user still speaking).
+Examples: "what is" → INCOMPLETE, "who is the" → INCOMPLETE, "what is 3+3" → COMPLETE, "hello" → COMPLETE
+Respond with ONLY: COMPLETE or INCOMPLETE`,
+        },
+        { role: "user", content: text },
+      ],
+      temperature: 0,
+      max_tokens: 10,
     })
 
-    const completenessResult = completenessCheck.text?.trim().toUpperCase() || ""
+    const completenessResult = completenessCheck.choices[0]?.message?.content?.trim().toUpperCase() || ""
 
     if (completenessResult === "INCOMPLETE") {
       return Response.json({ isComplete: false, isQuestion: false, answer: null })
     }
 
-    const systemPrompt = `You are an ultra-fast voice assistant with real-time web search. Answer ALL questions instantly and concisely.
+    let searchContext = ""
+    if (needsWebSearch(text)) {
+      searchContext = await searchTavily(text)
+    }
+
+    const systemPrompt = `You are an ultra-fast voice assistant. Answer ALL questions instantly in 2-8 words max.
 
 RULES:
-1. ANSWER any question about facts, people, events, news, math, science, history, current events, etc.
-2. Keep answers to 2-8 words maximum - just the raw answer, no fluff
-3. Do NOT restate the question or add preamble
-4. Use Google Search to get current, accurate information
-5. ONLY respond with NOT_A_QUESTION for statements that aren't questions at all (like "hello" or "the weather is nice")
-6. ONLY respond with PERSONAL_QUESTION for questions specifically about the USER's personal life that you cannot possibly know (like "how am I feeling", "what were my grades", "who is my friend Sarah")
+1. Just give the raw answer, no preamble
+2. If search results are provided, use them for accuracy
+3. ONLY respond "NOT_A_QUESTION" for non-questions like "hello"
+4. ONLY respond "PERSONAL_QUESTION" for questions about the user's personal life you can't know
 
-Examples:
-- "What is 2+2?" → "4"
-- "Who is Elon Musk?" → "Tesla and SpaceX CEO"
-- "Capital of France?" → "Paris"  
-- "What happened yesterday in the news?" → [Use search for real answer]
-- "What was Nvidia's Q3 revenue?" → [Use search for accurate figure]
-- "Who won the Super Bowl last year?" → [Use search for current answer]
-- "Hello" → "NOT_A_QUESTION"
-- "How am I feeling today?" → "PERSONAL_QUESTION"
+${searchContext ? `\nSEARCH RESULTS:\n${searchContext}` : ""}`
 
-IMPORTANT: If it's a question about the world, facts, people, events - ANSWER IT with real data from search. Only refuse personal questions about the user's own life.`
-
-    const response = await ai.models.generateContent({
-      model: "gemini-2.0-flash",
-      contents: `${systemPrompt}\n\nUser question: ${text}`,
-      config: {
-        tools: [{ googleSearch: {} }],
-        temperature: 0.3,
-        maxOutputTokens: 100,
-      },
+    const response = await groq.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: text },
+      ],
+      temperature: 0.3,
+      max_tokens: 50,
     })
 
-    const result = response.text?.trim() || ""
+    const result = response.choices[0]?.message?.content?.trim() || ""
     const isNotQuestion = result === "NOT_A_QUESTION" || result === "PERSONAL_QUESTION"
 
     return Response.json({
