@@ -324,10 +324,7 @@ export default function HomePage() {
             onTouchEnd={handleDragEnd}
             className={`relative transition-all ${isBeingDragged ? "opacity-50 scale-95" : ""} ${isDragOver ? "border-2 border-[var(--apple-blue)] rounded-2xl" : ""}`}
           >
-            <button
-              onClick={() => !isEditMode && router.push("/live")}
-              className="w-full bg-white dark:bg-zinc-900 rounded-2xl p-4 shadow-sm mb-3 text-left active:scale-[0.98] transition-transform"
-            >
+            <div className="w-full bg-white dark:bg-zinc-900 rounded-2xl p-4 shadow-sm mb-3 text-left">
               {isEditMode && (
                 <div className="absolute -top-2 -left-2 flex gap-1 z-10">
                   <div className="w-6 h-6 rounded-full bg-zinc-400 flex items-center justify-center cursor-grab">
@@ -351,7 +348,6 @@ export default function HomePage() {
                   <MessageSquare className="w-4 h-4 text-[var(--apple-blue)]" />
                   <span className="text-[var(--apple-blue)] text-sm font-medium">Live Transcript</span>
                 </div>
-                <ChevronRight className="w-4 h-4 text-zinc-400" />
               </div>
               <div
                 ref={transcriptContainerRef}
@@ -392,7 +388,7 @@ export default function HomePage() {
                   </>
                 )}
               </div>
-            </button>
+            </div>
           </div>
         )
 
