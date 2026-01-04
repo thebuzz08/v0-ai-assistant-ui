@@ -755,7 +755,7 @@ Return JSON only:
     const useSimpleModel = isSimple && !needsCalendarCheck
     const model = "gemini-2.0-flash-lite"
 
-    const systemPrompt = `You are a voice assistant. Answer ONLY questions you can reliably answer.
+    const systemPrompt = `You are a voice assistant. Answer questions asked to you.
 
 CURRENT: ${currentTimeStr}, ${currentDateStr}
 ${customInstructions ? `\nUSER'S CUSTOM INSTRUCTIONS:\n${customInstructions}\n` : ""}
@@ -766,17 +766,13 @@ ${calendarEvents?.length > 0 ? `\nYOUR CALENDAR:\n${calendarContext}` : ""}
 ${notesContext ? `\nYOUR NOTES:\n${notesContext}` : ""}
 
 RULES:
-1. Respond with ONLY critical facts - no preamble, no "The answer is", no filler
-2. Maximum 5-6 words for most answers. Examples:
-   - "Who is Elon Musk?" → "Tesla CEO, SpaceX founder" (NOT full biography)
-   - "What's 2+2?" → "4"
-   - "Who is Sarah?" → "SILENT" (too vague, could be many people)
-   - "Where is Paris?" → "France"
-3. If ambiguous or you can't answer reliably: Say "SILENT"
-4. If they mention a specific person FROM YOUR NOTES/CALENDAR, answer about them
-5. If they ask about someone without context (like "who is [random name]"): Say "SILENT"
-6. Calendar events: "[event name] at [time]" only
-7. Current events/news: Brief factual answer (1-2 sentences max)
+1. Answer ANY question that is NOT about the user's personal life
+2. Do NOT answer questions about: people the user knows personally, their schedule/appointments, their notes/private info, their relationships
+3. Respond with ONLY critical facts - no preamble, no filler
+4. Maximum 5-6 words for most answers
+5. For personal life questions (like "who is Sarah?" when referring to someone they know): Say "SILENT"
+6. For public knowledge (famous people, facts, news, math): Always answer
+7. Calendar events: "[event name] at [time]" only
 
 User says: "${text}"
 
@@ -799,33 +795,16 @@ Your response:`
     const validateSearchResults = (answer: string, query: string): boolean => {
       const query_lower = query.toLowerCase()
 
-      // Famous/obvious people always answer
-      const FAMOUS_KEYWORDS = [
-        "elon musk",
-        "steve jobs",
-        "bill gates",
-        "taylor swift",
-        "kim kardashian",
-        "donald trump",
-        "oprah",
-        "beyonce",
-        "lebron",
-        "messi",
-        "ronaldo",
+      // Personal life patterns to stay silent on
+      const personalPatterns = [
+        /who is (my|the user's)/i,
+        /tell me about (my|the user's)/i,
+        /what.*my (friend|family|colleague|boss)/i,
       ]
-      if (FAMOUS_KEYWORDS.some((k) => query_lower.includes(k))) return true
 
-      // Generic names - only answer if search returned ONE clear result
-      const ambiguous = /^who is [a-z\s]+\?$/i.test(query)
-      if (ambiguous) {
-        // If answer mentions multiple people or is too generic, silence it
-        const multipleMatches = (answer.match(/\b(or|also known|another|different)/gi) || []).length > 1
-        if (multipleMatches) return false
+      if (personalPatterns.some((p) => p.test(query))) return false
 
-        // If answer is vague ("could refer to", "various", "many"), silence it
-        if (/could refer|various|many|multiple|several|different people/i.test(answer)) return false
-      }
-
+      // For everything else (public figures, facts, news, general knowledge), answer
       return true
     }
 
