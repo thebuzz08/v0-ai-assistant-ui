@@ -1,12 +1,12 @@
 "use client"
 
 import { createContext, useContext, useState, useCallback, useRef, useEffect, type ReactNode } from "react"
-import type { SpeechRecognitionInterface, SpeechRecognitionEvent, SpeechRecognitionErrorEvent } from "some-library" // Hypothetical import for missing types
+import type { SpeechRecognition, SpeechRecognitionEvent, SpeechRecognitionErrorEvent } from "web-speech-api"
 
 declare global {
   interface Window {
-    SpeechRecognition: new () => SpeechRecognitionInterface
-    webkitSpeechRecognition: new () => SpeechRecognitionInterface
+    SpeechRecognition: new () => SpeechRecognition
+    webkitSpeechRecognition: new () => SpeechRecognition
   }
 }
 
@@ -45,14 +45,12 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
   const audioContextRef = useRef<AudioContext | null>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
   const animationFrameRef = useRef<number | null>(null)
-  const recognitionRef = useRef<SpeechRecognitionInterface | null>(null)
+  const recognitionRef = useRef<SpeechRecognition | null>(null)
   const currentParagraphRef = useRef("")
-  const checkQuestionTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const silenceTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const isListeningRef = useRef(false)
   const bestVoiceRef = useRef<SpeechSynthesisVoice | null>(null)
-  const streamingTextRef = useRef("")
-  const speakQueueRef = useRef<string[]>([])
-  const isSpeakingQueueRef = useRef(false)
+  const isProcessingRef = useRef(false)
 
   // Find best voice on mount
   useEffect(() => {
@@ -81,140 +79,130 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
-  const processSpeeechQueue = useCallback(() => {
-    if (isSpeakingQueueRef.current || speakQueueRef.current.length === 0) return
+  const speakText = useCallback((text: string) => {
+    if (!("speechSynthesis" in window)) return
 
-    const text = speakQueueRef.current.shift()
-    if (!text) return
-
-    isSpeakingQueueRef.current = true
+    window.speechSynthesis.cancel()
     const utterance = new SpeechSynthesisUtterance(text)
     if (bestVoiceRef.current) utterance.voice = bestVoiceRef.current
-    utterance.rate = 1.1 // Slightly faster for snappier responses
+    utterance.rate = 1.1
     utterance.onstart = () => setIsSpeaking(true)
-    utterance.onend = () => {
-      isSpeakingQueueRef.current = false
-      if (speakQueueRef.current.length > 0) {
-        processSpeeechQueue()
-      } else {
-        setIsSpeaking(false)
-      }
-    }
-    utterance.onerror = () => {
-      isSpeakingQueueRef.current = false
-      setIsSpeaking(false)
-    }
+    utterance.onend = () => setIsSpeaking(false)
+    utterance.onerror = () => setIsSpeaking(false)
     window.speechSynthesis.speak(utterance)
   }, [])
 
-  const speakText = useCallback((text: string) => {
-    if ("speechSynthesis" in window) {
-      window.speechSynthesis.cancel()
-      speakQueueRef.current = []
-      isSpeakingQueueRef.current = false
-
-      // Speak immediately
-      const utterance = new SpeechSynthesisUtterance(text)
-      if (bestVoiceRef.current) utterance.voice = bestVoiceRef.current
-      utterance.rate = 1.1
-      utterance.onstart = () => setIsSpeaking(true)
-      utterance.onend = () => setIsSpeaking(false)
-      utterance.onerror = () => setIsSpeaking(false)
-      window.speechSynthesis.speak(utterance)
-    }
-  }, [])
-
-  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null)
-  const lastCheckedTextRef = useRef("")
-  const isCheckingRef = useRef(false)
-
   const checkForQuestionAndAnswer = useCallback(
     async (paragraph: string) => {
-      if (!paragraph.trim() || isCheckingRef.current) return
-      if (paragraph === lastCheckedTextRef.current) return // Don't re-check same text
+      if (!paragraph.trim() || isProcessingRef.current) return
 
-      isCheckingRef.current = true
-      lastCheckedTextRef.current = paragraph
+      isProcessingRef.current = true
+      setIsProcessing(true)
+
+      const questionText = paragraph.trim()
+      currentParagraphRef.current = ""
+      setCurrentParagraph("")
+      setInterimTranscript("")
 
       try {
         const response = await fetch("/api/check-question", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: paragraph }),
+          body: JSON.stringify({ text: questionText }),
         })
 
-        const data = await response.json()
-
-        // If incomplete, just wait for more input
-        if (!data.isComplete) {
-          isCheckingRef.current = false
-          return
+        if (!response.ok) {
+          throw new Error("API error")
         }
 
-        // If complete and has answer, respond
-        if (data.isQuestion && data.answer) {
-          // Stop polling while we process the answer
-          if (pollingIntervalRef.current) {
-            clearInterval(pollingIntervalRef.current)
-            pollingIntervalRef.current = null
+        // Check if streaming
+        const contentType = response.headers.get("content-type")
+
+        if (contentType?.includes("text/event-stream")) {
+          // Streaming response
+          const reader = response.body?.getReader()
+          if (!reader) throw new Error("No reader")
+
+          // Add user entry first
+          setTranscript((prev) => [...prev, { speaker: "user", text: questionText }])
+
+          const decoder = new TextDecoder()
+          let fullText = ""
+          let addedAssistantEntry = false
+
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+
+            const chunk = decoder.decode(value, { stream: true })
+            const lines = chunk.split("\n")
+
+            for (const line of lines) {
+              if (line.startsWith("data: ")) {
+                const data = line.slice(6)
+                if (data === "[DONE]") continue
+
+                try {
+                  const parsed = JSON.parse(data)
+                  if (parsed.token) {
+                    fullText += parsed.token
+
+                    // Add or update assistant entry
+                    if (!addedAssistantEntry) {
+                      setTranscript((prev) => [...prev, { speaker: "assistant", text: fullText }])
+                      addedAssistantEntry = true
+                    } else {
+                      setTranscript((prev) => {
+                        const newTranscript = [...prev]
+                        newTranscript[newTranscript.length - 1] = { speaker: "assistant", text: fullText }
+                        return newTranscript
+                      })
+                    }
+                  }
+                } catch {}
+              }
+            }
           }
 
-          setIsProcessing(true)
-
-          // Clear transcript for next input
-          currentParagraphRef.current = ""
-          setCurrentParagraph("")
-          lastCheckedTextRef.current = ""
-
-          setTranscript((prev) => [
-            ...prev,
-            { speaker: "user", text: paragraph },
-            { speaker: "assistant", text: data.answer },
-          ])
-          speakText(data.answer)
-
-          // Resume polling after speaking
-          setTimeout(() => {
-            if (isListeningRef.current) {
-              startPolling()
-            }
-            setIsProcessing(false)
-          }, 500)
+          // Speak the full response
+          if (fullText) {
+            speakText(fullText)
+          }
         } else {
-          // Complete but not a question - clear and continue
-          currentParagraphRef.current = ""
-          setCurrentParagraph("")
-          lastCheckedTextRef.current = ""
+          // Non-streaming response
+          const data = await response.json()
+
+          if (data.isQuestion && data.answer) {
+            setTranscript((prev) => [
+              ...prev,
+              { speaker: "user", text: questionText },
+              { speaker: "assistant", text: data.answer },
+            ])
+            speakText(data.answer)
+          }
         }
       } catch (error) {
-        console.error("[v0] Error checking question:", error)
+        console.error("[v0] Error:", error)
       } finally {
-        isCheckingRef.current = false
+        isProcessingRef.current = false
+        setIsProcessing(false)
       }
     },
     [speakText],
   )
 
-  const startPolling = useCallback(() => {
-    if (pollingIntervalRef.current) return
-
-    console.log("[v0] Starting polling for questions")
-    pollingIntervalRef.current = setInterval(() => {
-      const currentText = currentParagraphRef.current
-      if (currentText && currentText.trim().length > 2) {
-        console.log("[v0] Polling check:", currentText)
-        checkForQuestionAndAnswer(currentText)
-      }
-    }, 500)
-  }, [checkForQuestionAndAnswer])
-
-  const stopPolling = useCallback(() => {
-    if (pollingIntervalRef.current) {
-      console.log("[v0] Stopping polling")
-      clearInterval(pollingIntervalRef.current)
-      pollingIntervalRef.current = null
+  const resetSilenceTimeout = useCallback(() => {
+    if (silenceTimeoutRef.current) {
+      clearTimeout(silenceTimeoutRef.current)
     }
-  }, [])
+
+    silenceTimeoutRef.current = setTimeout(() => {
+      const text = currentParagraphRef.current.trim()
+      if (text && text.length > 2 && !isProcessingRef.current) {
+        checkForQuestionAndAnswer(text)
+      }
+    }, 700) // 700ms of silence triggers check
+  }, [checkForQuestionAndAnswer])
 
   const startListening = useCallback(async () => {
     try {
@@ -259,32 +247,28 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
       recognition.lang = "en-US"
 
       recognition.onresult = (event: SpeechRecognitionEvent) => {
-        let finalTranscript = ""
+        let finalText = ""
         let interimText = ""
 
         for (let i = event.resultIndex; i < event.results.length; i++) {
           const result = event.results[i]
           if (result.isFinal) {
-            finalTranscript += result[0].transcript
+            finalText += result[0].transcript
           } else {
             interimText += result[0].transcript
           }
         }
 
-        const combinedText = currentParagraphRef.current
-          ? currentParagraphRef.current + (finalTranscript ? " " + finalTranscript.trim() : "")
-          : finalTranscript.trim()
-
-        if (finalTranscript) {
-          currentParagraphRef.current = combinedText
-          setCurrentParagraph(combinedText)
+        if (finalText) {
+          currentParagraphRef.current = currentParagraphRef.current
+            ? currentParagraphRef.current + " " + finalText.trim()
+            : finalText.trim()
+          setCurrentParagraph(currentParagraphRef.current)
           setInterimTranscript("")
+          resetSilenceTimeout()
         } else if (interimText) {
-          // Show interim as part of current paragraph for display
           setInterimTranscript(interimText)
-          // Also include interim in polling check
-          const fullText = combinedText ? combinedText + " " + interimText : interimText
-          setCurrentParagraph(fullText)
+          resetSilenceTimeout()
         }
       }
 
@@ -303,18 +287,19 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
 
       recognition.start()
       recognitionRef.current = recognition
-
-      startPolling()
     } catch (error) {
       console.error("[v0] Failed to start listening:", error)
       setHasPermission(false)
     }
-  }, [startPolling])
+  }, [resetSilenceTimeout])
 
   const stopListening = useCallback(() => {
     isListeningRef.current = false
 
-    stopPolling()
+    if (silenceTimeoutRef.current) {
+      clearTimeout(silenceTimeoutRef.current)
+      silenceTimeoutRef.current = null
+    }
 
     if (recognitionRef.current) {
       recognitionRef.current.stop()
@@ -324,7 +309,6 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
     setInterimTranscript("")
     setCurrentParagraph("")
     currentParagraphRef.current = ""
-    lastCheckedTextRef.current = ""
 
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.cancel()
@@ -343,15 +327,15 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
     analyserRef.current = null
     setAudioLevel(0)
     setIsListening(false)
-  }, [stopPolling])
+  }, [])
 
   useEffect(() => {
     return () => {
       if (recognitionRef.current) recognitionRef.current.stop()
       if (typeof window !== "undefined" && "speechSynthesis" in window) window.speechSynthesis.cancel()
-      stopPolling()
+      if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current)
     }
-  }, [stopPolling])
+  }, [])
 
   const requestPermission = useCallback(async () => {
     try {

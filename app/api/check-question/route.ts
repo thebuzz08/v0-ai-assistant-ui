@@ -64,28 +64,7 @@ export async function POST(request: Request) {
     const { text } = await request.json()
 
     if (!text || text.trim().length < 2) {
-      return Response.json({ isComplete: false, isQuestion: false, answer: null })
-    }
-
-    const completenessCheck = await groq.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
-      messages: [
-        {
-          role: "system",
-          content: `Determine if this speech is COMPLETE or INCOMPLETE (user still speaking).
-Examples: "what is" → INCOMPLETE, "who is the" → INCOMPLETE, "what is 3+3" → COMPLETE, "hello" → COMPLETE
-Respond with ONLY: COMPLETE or INCOMPLETE`,
-        },
-        { role: "user", content: text },
-      ],
-      temperature: 0,
-      max_tokens: 10,
-    })
-
-    const completenessResult = completenessCheck.choices[0]?.message?.content?.trim().toUpperCase() || ""
-
-    if (completenessResult === "INCOMPLETE") {
-      return Response.json({ isComplete: false, isQuestion: false, answer: null })
+      return Response.json({ isQuestion: false, answer: null })
     }
 
     let searchContext = ""
@@ -98,12 +77,13 @@ Respond with ONLY: COMPLETE or INCOMPLETE`,
 RULES:
 1. Just give the raw answer, no preamble
 2. If search results are provided, use them for accuracy
-3. ONLY respond "NOT_A_QUESTION" for non-questions like "hello"
-4. ONLY respond "PERSONAL_QUESTION" for questions about the user's personal life you can't know
+3. ONLY respond "NOT_A_QUESTION" for statements/greetings like "hello" or "thanks"
+4. ONLY respond "PERSONAL_QUESTION" for questions about the user's personal life you can't know (their grades, their feelings, their friends)
+5. Answer ALL general knowledge, facts, math, science, news, current events, famous people, companies, etc.
 
 ${searchContext ? `\nSEARCH RESULTS:\n${searchContext}` : ""}`
 
-    const response = await groq.chat.completions.create({
+    const stream = await groq.chat.completions.create({
       model: "llama-3.3-70b-versatile",
       messages: [
         { role: "system", content: systemPrompt },
@@ -111,18 +91,45 @@ ${searchContext ? `\nSEARCH RESULTS:\n${searchContext}` : ""}`
       ],
       temperature: 0.3,
       max_tokens: 50,
+      stream: true,
     })
 
-    const result = response.choices[0]?.message?.content?.trim() || ""
-    const isNotQuestion = result === "NOT_A_QUESTION" || result === "PERSONAL_QUESTION"
+    // Create streaming response
+    const encoder = new TextEncoder()
+    const readableStream = new ReadableStream({
+      async start(controller) {
+        let fullText = ""
 
-    return Response.json({
-      isComplete: true,
-      isQuestion: !isNotQuestion,
-      answer: isNotQuestion ? null : result,
+        for await (const chunk of stream) {
+          const token = chunk.choices[0]?.delta?.content || ""
+          if (token) {
+            fullText += token
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token })}\n\n`))
+          }
+        }
+
+        // Check if it was a question
+        const isNotQuestion = fullText.trim() === "NOT_A_QUESTION" || fullText.trim() === "PERSONAL_QUESTION"
+
+        if (isNotQuestion) {
+          // Send empty signal
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ notQuestion: true })}\n\n`))
+        }
+
+        controller.enqueue(encoder.encode("data: [DONE]\n\n"))
+        controller.close()
+      },
+    })
+
+    return new Response(readableStream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      },
     })
   } catch (error) {
     console.error("[v0] API Error:", error)
-    return Response.json({ isComplete: false, isQuestion: false, answer: null, error: String(error) }, { status: 500 })
+    return Response.json({ isQuestion: false, answer: null, error: String(error) }, { status: 500 })
   }
 }
