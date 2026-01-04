@@ -21,7 +21,7 @@ import {
   GripVertical,
   Square,
 } from "lucide-react"
-import { useRealtimeVoice } from "@/lib/realtime-voice-context"
+import { useMicrophone } from "@/lib/microphone-context"
 import { useCalendar } from "@/lib/calendar-context"
 import { useNotes } from "@/lib/notes-context"
 import { useAuth } from "@/lib/auth-context"
@@ -40,29 +40,23 @@ const DEFAULT_WIDGETS: WidgetType[] = ["transcript", "instructions"]
 export default function HomePage() {
   const router = useRouter()
   const { user, isLoading: authLoading } = useAuth()
-
   const {
-    isConnected,
     isListening,
-    audioLevel,
-    connect,
-    disconnect,
-    transcript: transcriptRealtime,
+    startListening,
+    stopListening,
+    setOnConversationComplete,
+    setNotesContext,
+    setCalendarContext,
+    transcript,
+    interimTranscript,
+    currentParagraph,
+    isProcessing,
     isSpeaking,
     customInstructions,
     setCustomInstructions,
-  } = useRealtimeVoice()
-
-  const {
-    isConnected: isCalendarConnected,
-    events,
-    fetchEvents,
-    userInfo,
-    getEventsForDate,
-    checkConnectionStatus,
-  } = useCalendar()
+  } = useMicrophone()
+  const { isConnected, events, fetchEvents, userInfo, getEventsForDate, checkConnectionStatus } = useCalendar()
   const { notes, addNote } = useNotes()
-
   const [showPulse, setShowPulse] = useState(false)
   const transcriptContainerRef = useRef<HTMLDivElement>(null)
   const [showInstructionsModal, setShowInstructionsModal] = useState(false)
@@ -111,7 +105,7 @@ export default function HomePage() {
     if (showInstructionsModal) {
       setInstructionsInput(customInstructions || "")
     }
-  }, [showInstructionsModal])
+  }, [showInstructionsModal, customInstructions])
 
   // Note recording timer
   useEffect(() => {
@@ -133,16 +127,16 @@ export default function HomePage() {
 
   // Capture transcript for notes
   useEffect(() => {
-    if (isRecordingNote && transcriptRealtime) {
+    if (isRecordingNote && (currentParagraph || interimTranscript)) {
       setNoteTranscript((prev) => {
-        const newText = transcriptRealtime.trim()
+        const newText = (currentParagraph + " " + interimTranscript).trim()
         if (newText && !prev.endsWith(newText)) {
           return (prev + " " + newText).trim()
         }
         return prev
       })
     }
-  }, [isRecordingNote, transcriptRealtime])
+  }, [isRecordingNote, currentParagraph, interimTranscript])
 
   useEffect(() => {
     if (events && events.length > 0) {
@@ -168,11 +162,9 @@ export default function HomePage() {
           datetime: event.start.dateTime || event.start.date || "",
         }
       })
-      // Assuming setCalendarContext is still needed, even without useRealtimeMode
-      // If not needed, you can remove this effect
-      // setCalendarContext(formattedEvents)
+      setCalendarContext(formattedEvents)
     }
-  }, [events])
+  }, [events, setCalendarContext])
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -204,15 +196,15 @@ export default function HomePage() {
 
   const handleToggle = async () => {
     if (isListening) {
-      disconnect()
+      stopListening()
     } else {
-      await connect()
+      await startListening()
     }
   }
 
   const getStatusText = () => {
     if (isSpeaking) return "AI speaking..."
-    if (!isConnected) return "Connecting..."
+    if (isProcessing) return "Processing..."
     if (isListening) return "Tap to pause"
     return "Tap to start listening"
   }
@@ -242,7 +234,7 @@ export default function HomePage() {
     setNoteRecordingTime(0)
     setIsRecordingNote(true)
     if (!isListening) {
-      await handleToggle()
+      await startListening()
     }
   }
 
@@ -302,7 +294,7 @@ export default function HomePage() {
     setDragOverWidget(null)
   }
 
-  const recentTranscripts = transcriptRealtime.slice(-4)
+  const recentTranscripts = transcript.slice(-4)
 
   const renderWidget = (widget: WidgetType) => {
     const isBeingDragged = draggedWidget === widget
@@ -324,7 +316,10 @@ export default function HomePage() {
             onTouchEnd={handleDragEnd}
             className={`relative transition-all ${isBeingDragged ? "opacity-50 scale-95" : ""} ${isDragOver ? "border-2 border-[var(--apple-blue)] rounded-2xl" : ""}`}
           >
-            <div className="w-full bg-white dark:bg-zinc-900 rounded-2xl p-4 shadow-sm mb-3 text-left">
+            <button
+              onClick={() => !isEditMode && router.push("/live")}
+              className="w-full bg-white dark:bg-zinc-900 rounded-2xl p-4 shadow-sm mb-3 text-left active:scale-[0.98] transition-transform"
+            >
               {isEditMode && (
                 <div className="absolute -top-2 -left-2 flex gap-1 z-10">
                   <div className="w-6 h-6 rounded-full bg-zinc-400 flex items-center justify-center cursor-grab">
@@ -348,12 +343,13 @@ export default function HomePage() {
                   <MessageSquare className="w-4 h-4 text-[var(--apple-blue)]" />
                   <span className="text-[var(--apple-blue)] text-sm font-medium">Live Transcript</span>
                 </div>
+                <ChevronRight className="w-4 h-4 text-zinc-400" />
               </div>
               <div
                 ref={transcriptContainerRef}
                 className="space-y-2 bg-zinc-100 dark:bg-zinc-800 rounded-xl p-3 max-h-40 overflow-y-auto"
               >
-                {recentTranscripts.length === 0 && !transcriptRealtime ? (
+                {recentTranscripts.length === 0 && !currentParagraph && !interimTranscript ? (
                   <p className="text-sm text-zinc-500 text-center py-2">
                     {isListening ? "Listening... speak to see transcript" : "Tap to view full transcript"}
                   </p>
@@ -373,14 +369,16 @@ export default function HomePage() {
                         </p>
                       </div>
                     ))}
-                    {transcriptRealtime && (
+                    {(currentParagraph || interimTranscript) && (
                       <div className="flex items-start gap-2">
                         <span className="text-xs font-medium text-zinc-500 shrink-0 flex items-center gap-1">
                           <Mic className="w-3 h-3 animate-pulse" />
                           You:
                         </span>
                         <p className="text-sm text-zinc-900 dark:text-zinc-100">
-                          {transcriptRealtime}
+                          {currentParagraph}
+                          {currentParagraph && interimTranscript ? " " : ""}
+                          <span className="text-zinc-500">{interimTranscript}</span>
                           <span className="animate-pulse">|</span>
                         </p>
                       </div>
@@ -388,7 +386,7 @@ export default function HomePage() {
                   </>
                 )}
               </div>
-            </div>
+            </button>
           </div>
         )
 
@@ -729,7 +727,7 @@ export default function HomePage() {
                 {isListening ? "Playing" : "Paused"}
               </h3>
               <p className="text-sm text-zinc-500 flex items-center gap-1">
-                {isConnected && <Loader2 className="w-3 h-3 animate-spin" />}
+                {isProcessing && <Loader2 className="w-3 h-3 animate-spin" />}
                 {getStatusText()}
               </p>
             </div>
