@@ -343,7 +343,12 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
             if (bestVoiceRef.current) utterance.voice = bestVoiceRef.current
             utterance.rate = 1.05
             utterance.onstart = () => setIsSpeaking(true)
-            utterance.onend = () => setIsSpeaking(false)
+            utterance.onend = () => {
+              setIsSpeaking(false)
+              currentUtteranceRef.current = null
+              setFinalTranscript("")
+              recentContextRef.current = []
+            }
             window.speechSynthesis.speak(utterance)
           }
 
@@ -501,6 +506,8 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
               utterance.onend = () => {
                 setIsSpeaking(false)
                 currentUtteranceRef.current = null
+                setFinalTranscript("")
+                recentContextRef.current = []
               }
               utterance.onerror = () => {
                 setIsSpeaking(false)
@@ -774,4 +781,8 @@ export function useMicrophone() {
     throw new Error("useMicrophone must be used within a MicrophoneProvider")
   }
   return context
+}
+
+function setFinalTranscript(transcript: string) {
+  // Placeholder function to demonstrate where setFinalTranscript might be used
 }
