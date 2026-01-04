@@ -202,13 +202,11 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
           channelCount: 1,
           echoCancellation: true,
           noiseSuppression: true,
-          sampleRate: 16000,
         },
       })
       mediaStreamRef.current = stream
 
-      // Set up audio level monitoring
-      const audioContext = new AudioContext({ sampleRate: 16000 })
+      const audioContext = new AudioContext()
       audioContextRef.current = audioContext
 
       const analyser = audioContext.createAnalyser()
@@ -236,13 +234,15 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
       const tokenResponse = await fetch("/api/deepgram-token")
       const { apiKey, wsUrl } = await tokenResponse.json()
 
-      const ws = new WebSocket(wsUrl, ["token", apiKey])
+      const actualSampleRate = audioContext.sampleRate
+      const finalWsUrl = wsUrl.replace("sample_rate=16000", `sample_rate=${actualSampleRate}`)
+
+      const ws = new WebSocket(finalWsUrl, ["token", apiKey])
       websocketRef.current = ws
 
       ws.onopen = () => {
-        console.log("[v0] Deepgram connected")
+        console.log("[v0] Deepgram connected and authenticated")
 
-        // Create a ScriptProcessorNode to get raw PCM data
         const processor = audioContext.createScriptProcessor(4096, 1, 1)
         processorRef.current = processor
 
@@ -252,7 +252,6 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
         processor.onaudioprocess = (e) => {
           if (ws.readyState === WebSocket.OPEN) {
             const inputData = e.inputBuffer.getChannelData(0)
-            // Convert float32 to int16
             const pcmData = new Int16Array(inputData.length)
             for (let i = 0; i < inputData.length; i++) {
               pcmData[i] = Math.max(-32768, Math.min(32767, inputData[i] * 32768))
@@ -263,30 +262,31 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
       }
 
       ws.onmessage = (event) => {
-        const data = JSON.parse(event.data)
+        try {
+          const data = JSON.parse(event.data)
 
-        if (data.type === "Results") {
-          const transcript = data.channel?.alternatives?.[0]?.transcript || ""
+          if (data.type === "Results") {
+            const transcript = data.channel?.alternatives?.[0]?.transcript || ""
 
-          if (transcript) {
-            if (data.is_final) {
-              // Final result - add to paragraph
-              currentParagraphRef.current = currentParagraphRef.current
-                ? currentParagraphRef.current + " " + transcript.trim()
-                : transcript.trim()
-              setCurrentParagraph(currentParagraphRef.current)
-              setInterimTranscript("")
-            } else {
-              // Interim result
-              setInterimTranscript(transcript)
+            if (transcript) {
+              console.log("[v0] Transcript:", transcript, "is_final:", data.is_final)
+              if (data.is_final) {
+                currentParagraphRef.current = currentParagraphRef.current
+                  ? currentParagraphRef.current + " " + transcript.trim()
+                  : transcript.trim()
+                setCurrentParagraph(currentParagraphRef.current)
+                setInterimTranscript("")
+              } else {
+                setInterimTranscript(transcript)
+              }
             }
           }
-        }
 
-        // Deepgram's utterance_end event signals end of speech
-        if (data.type === "UtteranceEnd") {
-          // Check for question when user stops speaking
-          checkForCompleteQuestion()
+          if (data.type === "UtteranceEnd") {
+            checkForCompleteQuestion()
+          }
+        } catch (e) {
+          console.error("[v0] Failed to parse message:", e)
         }
       }
 
@@ -294,8 +294,8 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
         console.error("[v0] Deepgram error:", error)
       }
 
-      ws.onclose = () => {
-        console.log("[v0] Deepgram disconnected")
+      ws.onclose = (event) => {
+        console.log("[v0] Deepgram disconnected, code:", event.code, "reason:", event.reason)
       }
 
       // Also poll periodically for questions mid-speech
