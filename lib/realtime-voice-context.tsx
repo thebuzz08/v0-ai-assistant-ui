@@ -2,7 +2,12 @@
 
 import { createContext, useContext, useState, useCallback, useRef, useEffect, type ReactNode } from "react"
 import { useCalendar } from "./calendar-context"
-import type { TranscriptEntry } from "./microphone-context"
+
+export interface TranscriptEntry {
+  speaker: "user" | "assistant"
+  text: string
+  timestamp: string
+}
 
 interface RealtimeVoiceContextType {
   isConnected: boolean
@@ -28,17 +33,15 @@ export function RealtimeVoiceProvider({ children }: { children: ReactNode }) {
 
   const wsRef = useRef<WebSocket | null>(null)
   const mediaStreamRef = useRef<MediaStream | null>(null)
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
   const animationFrameRef = useRef<number | null>(null)
-  const audioQueueRef = useRef<ArrayBuffer[]>([])
-  const isPlayingRef = useRef(false)
+  const audioPlayerContextRef = useRef<AudioContext | null>(null)
   const customInstructionsRef = useRef("")
+  const audioWorkletNodeRef = useRef<AudioWorkletNode | null>(null)
 
   const { events: calendarEvents } = useCalendar()
 
-  // Load custom instructions from localStorage
   useEffect(() => {
     if (typeof window !== "undefined") {
       const saved = localStorage.getItem("customInstructions")
@@ -57,7 +60,6 @@ export function RealtimeVoiceProvider({ children }: { children: ReactNode }) {
         localStorage.setItem("customInstructions", instructions)
       }
 
-      // Update session if connected
       if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
         const systemPrompt = buildSystemPrompt(instructions, calendarEvents)
         wsRef.current.send(
@@ -108,57 +110,79 @@ RESPONSE RULES:
 If unsure whether the user is talking TO you, err on the side of silence.`
   }
 
-  const playAudioChunk = useCallback(async (audioData: ArrayBuffer) => {
-    if (!audioContextRef.current) {
-      audioContextRef.current = new AudioContext({ sampleRate: 24000 })
-    }
-
+  const playAudioChunk = useCallback(async (base64Audio: string) => {
     try {
-      const audioBuffer = await audioContextRef.current.decodeAudioData(audioData)
-      const source = audioContextRef.current.createBufferSource()
+      if (!audioPlayerContextRef.current) {
+        audioPlayerContextRef.current = new AudioContext({ sampleRate: 24000 })
+      }
+
+      // Decode base64 to PCM16
+      const binaryString = atob(base64Audio)
+      const bytes = new Uint8Array(binaryString.length)
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i)
+      }
+
+      // Convert PCM16 to Float32 for Web Audio API
+      const pcm16 = new Int16Array(bytes.buffer)
+      const float32 = new Float32Array(pcm16.length)
+      for (let i = 0; i < pcm16.length; i++) {
+        float32[i] = pcm16[i] / 32768.0
+      }
+
+      // Create audio buffer
+      const audioBuffer = audioPlayerContextRef.current.createBuffer(1, float32.length, 24000)
+      audioBuffer.getChannelData(0).set(float32)
+
+      // Play audio
+      const source = audioPlayerContextRef.current.createBufferSource()
       source.buffer = audioBuffer
-      source.connect(audioContextRef.current.destination)
+      source.connect(audioPlayerContextRef.current.destination)
 
       source.onended = () => {
-        isPlayingRef.current = false
-        // Play next in queue
-        if (audioQueueRef.current.length > 0) {
-          const next = audioQueueRef.current.shift()
-          if (next) {
-            isPlayingRef.current = true
-            playAudioChunk(next)
-          }
-        } else {
-          setIsSpeaking(false)
-        }
+        setIsSpeaking(false)
       }
 
       source.start(0)
       setIsSpeaking(true)
     } catch (error) {
       console.error("[v0] Error playing audio:", error)
-      isPlayingRef.current = false
       setIsSpeaking(false)
     }
   }, [])
+
+  const float32ToPCM16Base64 = (float32Array: Float32Array): string => {
+    const pcm16 = new Int16Array(float32Array.length)
+    for (let i = 0; i < float32Array.length; i++) {
+      const s = Math.max(-1, Math.min(1, float32Array[i]))
+      pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff
+    }
+    const uint8 = new Uint8Array(pcm16.buffer)
+    let binary = ""
+    for (let i = 0; i < uint8.length; i++) {
+      binary += String.fromCharCode(uint8[i])
+    }
+    return btoa(binary)
+  }
 
   const connect = useCallback(async () => {
     try {
       console.log("[v0] Connecting to OpenAI Realtime API...")
 
-      // Get ephemeral token
       const tokenResponse = await fetch("/api/realtime/token")
       if (!tokenResponse.ok) {
+        const errorText = await tokenResponse.text()
+        console.error("[v0] Token error:", errorText)
         throw new Error("Failed to get realtime token")
       }
       const tokenData = await tokenResponse.json()
       const clientSecret = tokenData.client_secret?.value
 
       if (!clientSecret) {
+        console.error("[v0] No client secret in response:", tokenData)
         throw new Error("No client secret in response")
       }
 
-      // Connect WebSocket
       const wsUrl = `wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17`
       const ws = new WebSocket(wsUrl, ["realtime", `openai-insecure-api-key.${clientSecret}`])
 
@@ -166,7 +190,6 @@ If unsure whether the user is talking TO you, err on the side of silence.`
         console.log("[v0] WebSocket connected")
         setIsConnected(true)
 
-        // Update session with custom instructions
         const systemPrompt = buildSystemPrompt(customInstructionsRef.current, calendarEvents || [])
         ws.send(
           JSON.stringify({
@@ -177,7 +200,7 @@ If unsure whether the user is talking TO you, err on the side of silence.`
                 type: "server_vad",
                 threshold: 0.5,
                 prefix_padding_ms: 300,
-                silence_duration_ms: 500,
+                silence_duration_ms: 700,
               },
               input_audio_format: "pcm16",
               output_audio_format: "pcm16",
@@ -188,7 +211,6 @@ If unsure whether the user is talking TO you, err on the side of silence.`
           }),
         )
 
-        // Start audio capture
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: {
             channelCount: 1,
@@ -199,7 +221,6 @@ If unsure whether the user is talking TO you, err on the side of silence.`
         })
         mediaStreamRef.current = stream
 
-        // Set up audio level monitoring
         const audioContext = new AudioContext({ sampleRate: 24000 })
         audioContextRef.current = audioContext
         const analyser = audioContext.createAnalyser()
@@ -208,6 +229,7 @@ If unsure whether the user is talking TO you, err on the side of silence.`
         const source = audioContext.createMediaStreamSource(stream)
         source.connect(analyser)
 
+        // Audio level monitoring
         const dataArray = new Uint8Array(analyser.frequencyBinCount)
         const updateLevel = () => {
           if (!analyserRef.current) return
@@ -218,16 +240,30 @@ If unsure whether the user is talking TO you, err on the side of silence.`
         }
         updateLevel()
 
-        // Set up media recorder to send audio to OpenAI
-        const mediaRecorder = new MediaRecorder(stream, {
-          mimeType: "audio/webm;codecs=opus",
-        })
-        mediaRecorderRef.current = mediaRecorder
+        await audioContext.audioWorklet.addModule(
+          "data:text/javascript," +
+            encodeURIComponent(`
+              class AudioProcessor extends AudioWorkletProcessor {
+                process(inputs) {
+                  const input = inputs[0];
+                  if (input && input[0]) {
+                    this.port.postMessage(input[0]);
+                  }
+                  return true;
+                }
+              }
+              registerProcessor('audio-processor', AudioProcessor);
+            `),
+        )
 
-        mediaRecorder.ondataavailable = async (event) => {
-          if (event.data.size > 0 && ws.readyState === WebSocket.OPEN) {
-            const arrayBuffer = await event.data.arrayBuffer()
-            const base64Audio = btoa(String.fromCharCode(...new Uint8Array(arrayBuffer)))
+        const workletNode = new AudioWorkletNode(audioContext, "audio-processor")
+        audioWorkletNodeRef.current = workletNode
+        source.connect(workletNode)
+
+        workletNode.port.onmessage = (event) => {
+          if (ws.readyState === WebSocket.OPEN) {
+            const float32Audio = event.data
+            const base64Audio = float32ToPCM16Base64(float32Audio)
             ws.send(
               JSON.stringify({
                 type: "input_audio_buffer.append",
@@ -237,7 +273,6 @@ If unsure whether the user is talking TO you, err on the side of silence.`
           }
         }
 
-        mediaRecorder.start(100) // Send audio every 100ms
         setIsListening(true)
         console.log("[v0] Audio streaming started")
       })
@@ -247,13 +282,7 @@ If unsure whether the user is talking TO you, err on the side of silence.`
           const message = JSON.parse(event.data)
 
           switch (message.type) {
-            case "response.audio_transcript.delta":
-              // User's speech being transcribed
-              console.log("[v0] Transcript delta:", message.delta)
-              break
-
-            case "response.audio_transcript.done":
-              // Final transcript from user
+            case "conversation.item.input_audio_transcription.completed":
               const userText = message.transcript
               if (userText) {
                 console.log("[v0] User said:", userText)
@@ -269,28 +298,17 @@ If unsure whether the user is talking TO you, err on the side of silence.`
               break
 
             case "response.audio.delta":
-              // AI's audio response
               if (message.delta) {
-                const audioData = Uint8Array.from(atob(message.delta), (c) => c.charCodeAt(0))
-                const audioBuffer = audioData.buffer
-
-                if (isPlayingRef.current) {
-                  audioQueueRef.current.push(audioBuffer)
-                } else {
-                  isPlayingRef.current = true
-                  playAudioChunk(audioBuffer)
-                }
+                playAudioChunk(message.delta)
               }
               break
 
-            case "response.text.delta":
-              // AI's text response delta
-              console.log("[v0] AI response delta:", message.delta)
+            case "response.audio_transcript.delta":
+              console.log("[v0] AI transcript delta:", message.delta)
               break
 
-            case "response.text.done":
-              // Final AI text response
-              const assistantText = message.text
+            case "response.audio_transcript.done":
+              const assistantText = message.transcript
               if (assistantText) {
                 console.log("[v0] AI said:", assistantText)
                 setTranscript((prev) => [
@@ -311,40 +329,36 @@ If unsure whether the user is talking TO you, err on the side of silence.`
             case "error":
               console.error("[v0] Realtime API error:", message.error)
               break
-
-            default:
-              console.log("[v0] Unhandled message type:", message.type)
           }
         } catch (error) {
-          console.error("[v0] Error parsing WebSocket message:", error)
+          console.error("[v0] Error parsing message:", error)
         }
       })
 
-      ws.addEventListener("close", () => {
-        console.log("[v0] WebSocket closed")
+      ws.addEventListener("close", (event) => {
+        console.log("[v0] WebSocket closed", event.code, event.reason)
         setIsConnected(false)
         setIsListening(false)
       })
 
       ws.addEventListener("error", (error) => {
         console.error("[v0] WebSocket error:", error)
-        setIsConnected(false)
-        setIsListening(false)
       })
 
       wsRef.current = ws
     } catch (error) {
-      console.error("[v0] Error connecting to Realtime API:", error)
+      console.error("[v0] Error connecting:", error)
       setIsConnected(false)
       setIsListening(false)
     }
   }, [calendarEvents, playAudioChunk])
 
   const disconnect = useCallback(() => {
-    console.log("[v0] Disconnecting from Realtime API...")
+    console.log("[v0] Disconnecting...")
 
-    if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
-      mediaRecorderRef.current.stop()
+    if (audioWorkletNodeRef.current) {
+      audioWorkletNodeRef.current.disconnect()
+      audioWorkletNodeRef.current = null
     }
 
     if (mediaStreamRef.current) {
@@ -362,13 +376,16 @@ If unsure whether the user is talking TO you, err on the side of silence.`
       audioContextRef.current = null
     }
 
+    if (audioPlayerContextRef.current) {
+      audioPlayerContextRef.current.close()
+      audioPlayerContextRef.current = null
+    }
+
     if (wsRef.current) {
       wsRef.current.close()
       wsRef.current = null
     }
 
-    audioQueueRef.current = []
-    isPlayingRef.current = false
     analyserRef.current = null
     setAudioLevel(0)
     setIsConnected(false)

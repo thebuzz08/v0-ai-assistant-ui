@@ -21,7 +21,6 @@ import {
   GripVertical,
   Square,
 } from "lucide-react"
-import { useMicrophone } from "@/lib/microphone-context"
 import { useRealtimeVoice } from "@/lib/realtime-voice-context"
 import { useCalendar } from "@/lib/calendar-context"
 import { useNotes } from "@/lib/notes-context"
@@ -43,37 +42,26 @@ export default function HomePage() {
   const { user, isLoading: authLoading } = useAuth()
 
   const {
-    isListening: isListeningStandard,
-    startListening: startListeningStandard,
-    stopListening: stopListeningStandard,
-    setOnConversationComplete,
-    setNotesContext,
-    setCalendarContext,
-    transcript: transcriptStandard,
-    interimTranscript,
-    currentParagraph,
-    isProcessing,
-    isSpeaking: isSpeakingStandard,
-    customInstructions: customInstructionsStandard,
-    setCustomInstructions: setCustomInstructionsStandard,
-  } = useMicrophone()
-
-  const {
-    isConnected: isRealtimeConnected,
-    isListening: isListeningRealtime,
-    audioLevel: audioLevelRealtime,
-    connect: connectRealtime,
-    disconnect: disconnectRealtime,
+    isConnected,
+    isListening,
+    audioLevel,
+    connect,
+    disconnect,
     transcript: transcriptRealtime,
-    isSpeaking: isSpeakingRealtime,
-    customInstructions: customInstructionsRealtime,
-    setCustomInstructions: setCustomInstructionsRealtime,
+    isSpeaking,
+    customInstructions,
+    setCustomInstructions,
   } = useRealtimeVoice()
 
-  const { isConnected, events, fetchEvents, userInfo, getEventsForDate, checkConnectionStatus } = useCalendar()
+  const {
+    isConnected: isCalendarConnected,
+    events,
+    fetchEvents,
+    userInfo,
+    getEventsForDate,
+    checkConnectionStatus,
+  } = useCalendar()
   const { notes, addNote } = useNotes()
-
-  const [useRealtimeMode, setUseRealtimeMode] = useState(false)
 
   const [showPulse, setShowPulse] = useState(false)
   const transcriptContainerRef = useRef<HTMLDivElement>(null)
@@ -96,9 +84,6 @@ export default function HomePage() {
   // Drag state
   const [draggedWidget, setDraggedWidget] = useState<WidgetType | null>(null)
   const [dragOverWidget, setDragOverWidget] = useState<WidgetType | null>(null)
-
-  const customInstructions = useRealtimeMode ? customInstructionsRealtime : customInstructionsStandard
-  const setCustomInstructions = useRealtimeMode ? setCustomInstructionsRealtime : setCustomInstructionsStandard
 
   useEffect(() => {
     checkConnectionStatus()
@@ -148,16 +133,16 @@ export default function HomePage() {
 
   // Capture transcript for notes
   useEffect(() => {
-    if (isRecordingNote && (currentParagraph || interimTranscript)) {
+    if (isRecordingNote && transcriptRealtime) {
       setNoteTranscript((prev) => {
-        const newText = (currentParagraph + " " + interimTranscript).trim()
+        const newText = transcriptRealtime.trim()
         if (newText && !prev.endsWith(newText)) {
           return (prev + " " + newText).trim()
         }
         return prev
       })
     }
-  }, [isRecordingNote, currentParagraph, interimTranscript])
+  }, [isRecordingNote, transcriptRealtime])
 
   useEffect(() => {
     if (events && events.length > 0) {
@@ -183,9 +168,11 @@ export default function HomePage() {
           datetime: event.start.dateTime || event.start.date || "",
         }
       })
-      setCalendarContext(formattedEvents)
+      // Assuming setCalendarContext is still needed, even without useRealtimeMode
+      // If not needed, you can remove this effect
+      // setCalendarContext(formattedEvents)
     }
-  }, [events, setCalendarContext])
+  }, [events])
 
   useEffect(() => {
     if (!authLoading && !user) {
@@ -215,45 +202,18 @@ export default function HomePage() {
     return "?"
   }
 
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      const saved = localStorage.getItem("useRealtimeMode")
-      if (saved !== null) {
-        setUseRealtimeMode(saved === "true")
-      }
-    }
-  }, [])
-
-  const isListening = useRealtimeMode ? isListeningRealtime : isListeningStandard
-  const isSpeaking = useRealtimeMode ? isSpeakingRealtime : isSpeakingStandard
-  const transcript = useRealtimeMode ? transcriptRealtime : transcriptStandard
-
   const handleToggle = async () => {
-    if (useRealtimeMode) {
-      // Realtime mode
-      if (isListeningRealtime) {
-        disconnectRealtime()
-      } else {
-        await connectRealtime()
-      }
+    if (isListening) {
+      disconnect()
     } else {
-      // Standard mode
-      if (isListeningStandard) {
-        stopListeningStandard()
-      } else {
-        await startListeningStandard()
-      }
+      await connect()
     }
   }
 
   const getStatusText = () => {
     if (isSpeaking) return "AI speaking..."
-    if (useRealtimeMode) {
-      if (isRealtimeConnected) return isListeningRealtime ? "Tap to pause" : "Tap to start"
-      return "Connecting..."
-    }
-    if (isProcessing) return "Processing..."
-    if (isListeningStandard) return "Tap to pause"
+    if (!isConnected) return "Connecting..."
+    if (isListening) return "Tap to pause"
     return "Tap to start listening"
   }
 
@@ -342,7 +302,7 @@ export default function HomePage() {
     setDragOverWidget(null)
   }
 
-  const recentTranscripts = transcript.slice(-4)
+  const recentTranscripts = transcriptRealtime.slice(-4)
 
   const renderWidget = (widget: WidgetType) => {
     const isBeingDragged = draggedWidget === widget
@@ -397,7 +357,7 @@ export default function HomePage() {
                 ref={transcriptContainerRef}
                 className="space-y-2 bg-zinc-100 dark:bg-zinc-800 rounded-xl p-3 max-h-40 overflow-y-auto"
               >
-                {recentTranscripts.length === 0 && !currentParagraph && !interimTranscript ? (
+                {recentTranscripts.length === 0 && !transcriptRealtime ? (
                   <p className="text-sm text-zinc-500 text-center py-2">
                     {isListening ? "Listening... speak to see transcript" : "Tap to view full transcript"}
                   </p>
@@ -417,16 +377,14 @@ export default function HomePage() {
                         </p>
                       </div>
                     ))}
-                    {(currentParagraph || interimTranscript) && (
+                    {transcriptRealtime && (
                       <div className="flex items-start gap-2">
                         <span className="text-xs font-medium text-zinc-500 shrink-0 flex items-center gap-1">
                           <Mic className="w-3 h-3 animate-pulse" />
                           You:
                         </span>
                         <p className="text-sm text-zinc-900 dark:text-zinc-100">
-                          {currentParagraph}
-                          {currentParagraph && interimTranscript ? " " : ""}
-                          <span className="text-zinc-500">{interimTranscript}</span>
+                          {transcriptRealtime}
                           <span className="animate-pulse">|</span>
                         </p>
                       </div>
@@ -775,7 +733,7 @@ export default function HomePage() {
                 {isListening ? "Playing" : "Paused"}
               </h3>
               <p className="text-sm text-zinc-500 flex items-center gap-1">
-                {isProcessing && <Loader2 className="w-3 h-3 animate-spin" />}
+                {isConnected && <Loader2 className="w-3 h-3 animate-spin" />}
                 {getStatusText()}
               </p>
             </div>

@@ -20,7 +20,6 @@ import {
   Shield,
   HelpCircle,
   Scale,
-  Zap,
 } from "lucide-react"
 import Link from "next/link"
 
@@ -32,7 +31,6 @@ export default function SettingsPage() {
   const [isSigningOut, setIsSigningOut] = useState(false)
   const [isDisconnecting, setIsDisconnecting] = useState(false)
   const [mounted, setMounted] = useState(false)
-  const [useRealtimeMode, setUseRealtimeMode] = useState(false)
 
   useEffect(() => {
     setMounted(true)
@@ -42,11 +40,6 @@ export default function SettingsPage() {
     const savedTheme = localStorage.getItem("theme") as "light" | "dark" | "system" | null
     if (savedTheme) {
       setTheme(savedTheme)
-    }
-
-    const savedRealtimeMode = localStorage.getItem("useRealtimeMode")
-    if (savedRealtimeMode !== null) {
-      setUseRealtimeMode(savedRealtimeMode === "true")
     }
   }, [checkConnectionStatus])
 
@@ -82,12 +75,6 @@ export default function SettingsPage() {
         document.documentElement.classList.remove("dark")
       }
     }
-  }
-
-  const handleRealtimeModeToggle = () => {
-    const newValue = !useRealtimeMode
-    setUseRealtimeMode(newValue)
-    localStorage.setItem("useRealtimeMode", String(newValue))
   }
 
   if (!mounted || authLoading) {
@@ -210,55 +197,6 @@ export default function SettingsPage() {
                   Your Google Calendar is automatically connected because you signed in with Google. To disconnect, you
                   would need to sign out and use a different account.
                 </p>
-              )}
-            </div>
-          </div>
-
-          <div className="bg-white/80 backdrop-blur-sm rounded-2xl shadow-sm overflow-hidden">
-            <div className="p-4 border-b border-gray-100">
-              <h3 className="text-sm font-medium text-gray-500 uppercase tracking-wide">Voice Mode</h3>
-            </div>
-
-            <div className="p-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div
-                    className={`w-10 h-10 rounded-full flex items-center justify-center ${
-                      useRealtimeMode ? "bg-purple-100" : "bg-blue-100"
-                    }`}
-                  >
-                    <Zap className={`w-5 h-5 ${useRealtimeMode ? "text-purple-600" : "text-blue-600"}`} />
-                  </div>
-                  <div>
-                    <p className="font-medium text-gray-800">Realtime Mode</p>
-                    <p className="text-sm text-gray-500">
-                      {useRealtimeMode ? "Ultra-low latency (~300ms)" : "Standard mode (~1-2s)"}
-                    </p>
-                  </div>
-                </div>
-
-                <button
-                  onClick={handleRealtimeModeToggle}
-                  className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                    useRealtimeMode ? "bg-purple-600" : "bg-gray-300"
-                  }`}
-                >
-                  <span
-                    className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                      useRealtimeMode ? "translate-x-6" : "translate-x-1"
-                    }`}
-                  />
-                </button>
-              </div>
-
-              {useRealtimeMode && (
-                <div className="mt-3 text-xs text-purple-600 bg-purple-50 p-3 rounded-lg flex items-start gap-2">
-                  <Zap className="w-4 h-4 flex-shrink-0 mt-0.5" />
-                  <p>
-                    Realtime mode uses OpenAI's speech-to-speech model for faster responses. The AI will only respond to
-                    direct questions, staying silent during casual conversation.
-                  </p>
-                </div>
               )}
             </div>
           </div>
