@@ -53,6 +53,7 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const lastProcessedTextRef = useRef("")
   const answeredQuestionsRef = useRef<Set<string>>(new Set())
+  const ttsUnlockedRef = useRef(false)
 
   useEffect(() => {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) return
@@ -80,6 +81,19 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  const unlockTTS = useCallback(() => {
+    if (ttsUnlockedRef.current) return
+    if (!("speechSynthesis" in window)) return
+
+    // Create a silent utterance to unlock TTS on Safari
+    const utterance = new SpeechSynthesisUtterance("")
+    utterance.volume = 0
+    utterance.onend = () => {
+      ttsUnlockedRef.current = true
+    }
+    window.speechSynthesis.speak(utterance)
+  }, [])
+
   const speakText = useCallback((text: string) => {
     if (!("speechSynthesis" in window)) return
 
@@ -87,9 +101,13 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
     const utterance = new SpeechSynthesisUtterance(text)
     if (bestVoiceRef.current) utterance.voice = bestVoiceRef.current
     utterance.rate = 1.1
+    utterance.volume = 1
     utterance.onstart = () => setIsSpeaking(true)
     utterance.onend = () => setIsSpeaking(false)
-    utterance.onerror = () => setIsSpeaking(false)
+    utterance.onerror = (e) => {
+      console.error("[v0] TTS error:", e)
+      setIsSpeaking(false)
+    }
     window.speechSynthesis.speak(utterance)
   }, [])
 
@@ -199,6 +217,8 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
   }, [answerQuestion])
 
   const startListening = useCallback(async () => {
+    unlockTTS()
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
@@ -285,12 +305,12 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
       recognition.start()
       recognitionRef.current = recognition
 
-      pollIntervalRef.current = setInterval(checkForCompleteQuestion, 500)
+      pollIntervalRef.current = setInterval(checkForCompleteQuestion, 300)
     } catch (error) {
       console.error("[v0] Failed to start listening:", error)
       setHasPermission(false)
     }
-  }, [checkForCompleteQuestion])
+  }, [checkForCompleteQuestion, unlockTTS])
 
   const stopListening = useCallback(() => {
     isListeningRef.current = false
