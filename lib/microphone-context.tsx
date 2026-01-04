@@ -314,6 +314,7 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
       if (text.trim().length < 3) return
 
       console.log("[v0] checkForQuestionAndAnswer called with:", text)
+      console.log("[v0] aiEnabled:", aiEnabled)
 
       isCheckingRef.current = true
       setIsProcessing(true)
@@ -402,6 +403,7 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
         if (response.ok) {
           const data = await response.json()
           console.log("[v0] API response:", data)
+          console.log("[v0] isQuestion:", data.isQuestion, "answer:", data.answer)
           const {
             isQuestion,
             answer,
@@ -535,9 +537,11 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
               recentContextRef.current = recentContextRef.current.slice(-3)
             }
           }
+        } else {
+          console.error("[v0] API returned non-ok status:", response.status, await response.text())
         }
       } catch (error) {
-        console.error("Error checking for question:", error)
+        console.error("[v0] Error checking for question:", error)
       } finally {
         isCheckingRef.current = false
         setIsProcessing(false)
@@ -593,77 +597,106 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
         console.log("[v0] Starting Deepgram transcription")
 
         // Set up audio processor for streaming to Deepgram
-        const processor = audioContext.createScriptProcessor(4096, 1, 1)
-        source.connect(processor)
-        processor.connect(audioContext.destination)
-
-        let audioChunks: Float32Array[] = []
-        let lastSendTime = Date.now()
-
-        processor.onaudioprocess = async (e) => {
-          const inputData = e.inputBuffer.getChannelData(0)
-          audioChunks.push(new Float32Array(inputData))
-
-          // Send audio every 500ms
-          if (Date.now() - lastSendTime > 500 && audioChunks.length > 0) {
-            lastSendTime = Date.now()
-
-            // Combine chunks
-            const totalLength = audioChunks.reduce((sum, chunk) => sum + chunk.length, 0)
-            const combined = new Float32Array(totalLength)
-            let offset = 0
-            for (const chunk of audioChunks) {
-              combined.set(chunk, offset)
-              offset += chunk.length
-            }
-            audioChunks = []
-
-            // Convert float32 to int16 for Deepgram
-            const int16 = new Int16Array(combined.length)
-            for (let i = 0; i < combined.length; i++) {
-              const s = Math.max(-1, Math.min(1, combined[i]))
-              int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff
+        const workletCode = `
+          class AudioProcessorWorklet extends AudioWorkletProcessor {
+            constructor() {
+              super();
+              this.audioChunks = [];
+              this.lastSendTime = Date.now();
             }
 
-            try {
-              const response = await fetch("/api/transcribe", {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/octet-stream",
-                },
-                body: int16.buffer,
-              })
+            process(inputs, outputs) {
+              const input = inputs[0];
+              if (input && input.length > 0) {
+                const inputData = input[0];
+                this.audioChunks.push(new Float32Array(inputData));
 
-              const data = await response.json()
+                // Send audio every 500ms
+                if (Date.now() - this.lastSendTime > 500 && this.audioChunks.length > 0) {
+                  this.lastSendTime = Date.now();
 
-              if (data.transcript && data.transcript.trim()) {
-                if (data.isInterim) {
-                  setInterimTranscript(data.transcript)
-                } else {
-                  setInterimTranscript("")
-                  const newParagraph = currentParagraphRef.current
-                    ? currentParagraphRef.current + " " + data.transcript.trim()
-                    : data.transcript.trim()
-
-                  currentParagraphRef.current = newParagraph
-                  setCurrentParagraph(newParagraph)
-
-                  if (checkQuestionTimeoutRef.current) {
-                    clearTimeout(checkQuestionTimeoutRef.current)
+                  // Combine chunks
+                  const totalLength = this.audioChunks.reduce((sum, chunk) => sum + chunk.length, 0);
+                  const combined = new Float32Array(totalLength);
+                  let offset = 0;
+                  for (const chunk of this.audioChunks) {
+                    combined.set(chunk, offset);
+                    offset += chunk.length;
                   }
-                  checkQuestionTimeoutRef.current = setTimeout(() => {
-                    checkForQuestionAndAnswerRef.current(newParagraph)
-                  }, 700)
+                  this.audioChunks = [];
+
+                  // Convert float32 to int16 for Deepgram
+                  const int16 = new Int16Array(combined.length);
+                  for (let i = 0; i < combined.length; i++) {
+                    const s = Math.max(-1, Math.min(1, combined[i]));
+                    int16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+                  }
+
+                  this.port.postMessage({ type: 'audio', data: int16.buffer }, [int16.buffer]);
                 }
               }
-            } catch (error) {
-              console.error("[v0] Deepgram transcription error:", error)
+              return true;
             }
           }
-        }
 
-        processorRef.current = processor
-        return
+          registerProcessor('audio-processor', AudioProcessorWorklet);
+        `
+
+        const blob = new Blob([workletCode], { type: "application/javascript" })
+        const workletUrl = URL.createObjectURL(blob)
+
+        try {
+          await audioContext.audioWorklet.addModule(workletUrl)
+          const processor = new AudioWorkletNode(audioContext, "audio-processor")
+
+          processor.port.onmessage = async (event) => {
+            if (event.data.type === "audio") {
+              const int16 = new Int16Array(event.data.data)
+              try {
+                const response = await fetch("/api/transcribe", {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/octet-stream",
+                  },
+                  body: int16.buffer,
+                })
+
+                const data = await response.json()
+
+                if (data.transcript && data.transcript.trim()) {
+                  if (data.isInterim) {
+                    setInterimTranscript(data.transcript)
+                  } else {
+                    setInterimTranscript("")
+                    const newParagraph = currentParagraphRef.current
+                      ? currentParagraphRef.current + " " + data.transcript.trim()
+                      : data.transcript.trim()
+
+                    currentParagraphRef.current = newParagraph
+                    setCurrentParagraph(newParagraph)
+
+                    if (checkQuestionTimeoutRef.current) {
+                      clearTimeout(checkQuestionTimeoutRef.current)
+                    }
+                    checkQuestionTimeoutRef.current = setTimeout(() => {
+                      checkForQuestionAndAnswerRef.current(newParagraph)
+                    }, 700)
+                  }
+                }
+              } catch (error) {
+                console.error("[v0] Deepgram transcription error:", error)
+              }
+            }
+          }
+
+          source.connect(processor)
+          processor.connect(audioContext.destination)
+
+          processorRef.current = processor
+          return
+        } catch (error) {
+          console.error("[v0] Failed to initialize AudioWorkletNode:", error)
+        }
       }
 
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition

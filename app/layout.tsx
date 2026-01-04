@@ -10,10 +10,10 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <ClerkProvider signInUrl="/login" signUpUrl="/login" afterSignInUrl="/" afterSignUpUrl="/">
+    <ClerkProvider signInUrl="/login" signUpUrl="/login" fallbackRedirectUrl="/">
       <html lang="en" suppressHydrationWarning>
         <head>
-          <title>Proactive Assistant</title>
+          <title>Omnisound</title>
           <meta
             name="description"
             content="Your mind. Augmented. A proactive in-ear assistant that helps before you ask."
@@ -24,11 +24,13 @@ export default function RootLayout({
           />
           <meta name="apple-mobile-web-app-capable" content="yes" />
           <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-          <meta name="apple-mobile-web-app-title" content="Assistant" />
+          <meta name="apple-mobile-web-app-title" content="Omnisound" />
           <meta name="mobile-web-app-capable" content="yes" />
           <meta name="theme-color" content="#000000" media="(prefers-color-scheme: dark)" />
           <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
           <link rel="apple-touch-icon" href="/icon-192.png" />
+          <link rel="icon" href="/favicon.ico" sizes="any" />
+          <link rel="icon" href="/icon.svg" type="image/svg+xml" />
         </head>
         <body className="font-sans antialiased overscroll-none">
           <ClientLayout>{children}</ClientLayout>
