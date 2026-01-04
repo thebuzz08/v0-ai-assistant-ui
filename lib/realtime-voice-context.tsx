@@ -155,14 +155,12 @@ If the user is NOT asking you something directly, respond with exactly: "SILENT"
           !aiResponse || aiResponse.toUpperCase().replace(/[^A-Z]/g, "") === "SILENT" || aiResponse.length === 0
 
         if (!shouldStaySilent) {
-          setTranscript((prev) => [
-            ...prev,
-            {
-              speaker: "assistant",
-              text: aiResponse,
-              timestamp: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
-            },
-          ])
+          const newEntry: TranscriptEntry = {
+            speaker: "assistant",
+            text: aiResponse,
+            timestamp: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+          }
+          setTranscript((prev) => [...prev, newEntry])
 
           if ("speechSynthesis" in window) {
             const utterance = new SpeechSynthesisUtterance(aiResponse)
@@ -297,14 +295,12 @@ If the user is NOT asking you something directly, respond with exactly: "SILENT"
                 clearTimeout(silenceTimerRef.current)
               }
 
-              setTranscript((prev) => [
-                ...prev,
-                {
-                  speaker: "user",
-                  text: transcript,
-                  timestamp: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
-                },
-              ])
+              const newUserEntry: TranscriptEntry = {
+                speaker: "user",
+                text: transcript,
+                timestamp: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+              }
+              setTranscript((prev) => [...prev, newUserEntry])
 
               silenceTimerRef.current = setTimeout(() => {
                 processAIResponse(transcript)
