@@ -1,46 +1,7 @@
 "use client"
 
 import { createContext, useContext, useState, useCallback, useRef, useEffect, type ReactNode } from "react"
-
-interface SpeechRecognitionResult {
-  readonly isFinal: boolean
-  readonly length: number
-  item(index: number): SpeechRecognitionAlternative
-  [index: number]: SpeechRecognitionAlternative
-}
-
-interface SpeechRecognitionAlternative {
-  readonly transcript: string
-  readonly confidence: number
-}
-
-interface SpeechRecognitionResultList {
-  readonly length: number
-  item(index: number): SpeechRecognitionResult
-  [index: number]: SpeechRecognitionResult
-}
-
-interface SpeechRecognitionEvent extends Event {
-  readonly resultIndex: number
-  readonly results: SpeechRecognitionResultList
-}
-
-interface SpeechRecognitionErrorEvent extends Event {
-  readonly error: string
-  readonly message: string
-}
-
-interface SpeechRecognitionInterface extends EventTarget {
-  continuous: boolean
-  interimResults: boolean
-  lang: string
-  start(): void
-  stop(): void
-  abort(): void
-  onresult: ((event: SpeechRecognitionEvent) => void) | null
-  onerror: ((event: SpeechRecognitionErrorEvent) => void) | null
-  onend: (() => void) | null
-}
+import type { SpeechRecognitionInterface, SpeechRecognitionEvent, SpeechRecognitionErrorEvent } from "some-library" // Hypothetical import for missing types
 
 declare global {
   interface Window {
@@ -89,6 +50,9 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
   const checkQuestionTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const isListeningRef = useRef(false)
   const bestVoiceRef = useRef<SpeechSynthesisVoice | null>(null)
+  const streamingTextRef = useRef("")
+  const speakQueueRef = useRef<string[]>([])
+  const isSpeakingQueueRef = useRef(false)
 
   // Find best voice on mount
   useEffect(() => {
@@ -117,12 +81,42 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  const processSpeeechQueue = useCallback(() => {
+    if (isSpeakingQueueRef.current || speakQueueRef.current.length === 0) return
+
+    const text = speakQueueRef.current.shift()
+    if (!text) return
+
+    isSpeakingQueueRef.current = true
+    const utterance = new SpeechSynthesisUtterance(text)
+    if (bestVoiceRef.current) utterance.voice = bestVoiceRef.current
+    utterance.rate = 1.1 // Slightly faster for snappier responses
+    utterance.onstart = () => setIsSpeaking(true)
+    utterance.onend = () => {
+      isSpeakingQueueRef.current = false
+      if (speakQueueRef.current.length > 0) {
+        processSpeeechQueue()
+      } else {
+        setIsSpeaking(false)
+      }
+    }
+    utterance.onerror = () => {
+      isSpeakingQueueRef.current = false
+      setIsSpeaking(false)
+    }
+    window.speechSynthesis.speak(utterance)
+  }, [])
+
   const speakText = useCallback((text: string) => {
     if ("speechSynthesis" in window) {
       window.speechSynthesis.cancel()
+      speakQueueRef.current = []
+      isSpeakingQueueRef.current = false
+
+      // Speak immediately
       const utterance = new SpeechSynthesisUtterance(text)
       if (bestVoiceRef.current) utterance.voice = bestVoiceRef.current
-      utterance.rate = 1.05
+      utterance.rate = 1.1
       utterance.onstart = () => setIsSpeaking(true)
       utterance.onend = () => setIsSpeaking(false)
       utterance.onerror = () => setIsSpeaking(false)
@@ -135,50 +129,77 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
       if (!paragraph.trim()) return
 
       setIsProcessing(true)
+      streamingTextRef.current = ""
+
       try {
         const response = await fetch("/api/check-question", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: paragraph }),
+          body: JSON.stringify({ text: paragraph, stream: true }),
         })
 
-        const data = await response.json()
+        if (!response.body) {
+          setIsProcessing(false)
+          return
+        }
 
-        if (data.isQuestion && data.answer) {
-          // Clear current paragraph since we're handling it
-          currentParagraphRef.current = ""
-          setCurrentParagraph("")
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        let fullAnswer = ""
+        let isQuestion = false
+        let firstChunkSpoken = false
 
-          // Add user message and AI response to transcript
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+
+          const text = decoder.decode(value)
+          const lines = text.split("\n").filter((line) => line.startsWith("data: "))
+
+          for (const line of lines) {
+            try {
+              const data = JSON.parse(line.slice(6))
+
+              if (data.done) {
+                isQuestion = data.isQuestion
+                fullAnswer = data.answer || ""
+              } else if (data.chunk) {
+                streamingTextRef.current += data.chunk
+
+                if (
+                  !firstChunkSpoken &&
+                  streamingTextRef.current.length > 2 &&
+                  !streamingTextRef.current.startsWith("NOT_A_QUESTION") &&
+                  !streamingTextRef.current.startsWith("UNKNOWN")
+                ) {
+                  firstChunkSpoken = true
+                  // Clear for new input
+                  currentParagraphRef.current = ""
+                  setCurrentParagraph("")
+                }
+              }
+            } catch {}
+          }
+        }
+
+        // Final handling
+        if (isQuestion && fullAnswer) {
           setTranscript((prev) => [
             ...prev,
             { speaker: "user", text: paragraph },
-            { speaker: "assistant", text: data.answer },
+            { speaker: "assistant", text: fullAnswer },
           ])
-
-          // Speak the response
-          speakText(data.answer)
+          speakText(fullAnswer)
         }
       } catch (error) {
         console.error("[v0] Error checking question:", error)
       } finally {
         setIsProcessing(false)
+        streamingTextRef.current = ""
       }
     },
     [speakText],
   )
-
-  const requestPermission = useCallback(async (): Promise<boolean> => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      stream.getTracks().forEach((track) => track.stop())
-      setHasPermission(true)
-      return true
-    } catch {
-      setHasPermission(false)
-      return false
-    }
-  }, [])
 
   const startListening = useCallback(async () => {
     try {
@@ -249,7 +270,7 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
           if (checkQuestionTimeoutRef.current) clearTimeout(checkQuestionTimeoutRef.current)
           checkQuestionTimeoutRef.current = setTimeout(() => {
             checkForQuestionAndAnswer(newParagraph)
-          }, 700)
+          }, 400)
         }
       }
 
@@ -315,6 +336,21 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
       if (recognitionRef.current) recognitionRef.current.stop()
       if (typeof window !== "undefined" && "speechSynthesis" in window) window.speechSynthesis.cancel()
       if (checkQuestionTimeoutRef.current) clearTimeout(checkQuestionTimeoutRef.current)
+    }
+  }, [])
+
+  const requestPermission = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+      })
+      mediaStreamRef.current = stream
+      setHasPermission(true)
+      return true
+    } catch (error) {
+      console.error("[v0] Failed to request permission:", error)
+      setHasPermission(false)
+      return false
     }
   }, [])
 
