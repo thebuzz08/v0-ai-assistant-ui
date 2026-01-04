@@ -124,11 +124,17 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
     }
   }, [])
 
+  const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null)
+  const lastCheckedTextRef = useRef("")
+  const isCheckingRef = useRef(false)
+
   const checkForQuestionAndAnswer = useCallback(
     async (paragraph: string) => {
-      if (!paragraph.trim()) return
+      if (!paragraph.trim() || isCheckingRef.current) return
+      if (paragraph === lastCheckedTextRef.current) return // Don't re-check same text
 
-      setIsProcessing(true)
+      isCheckingRef.current = true
+      lastCheckedTextRef.current = paragraph
 
       try {
         const response = await fetch("/api/check-question", {
@@ -139,10 +145,26 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
 
         const data = await response.json()
 
+        // If incomplete, just wait for more input
+        if (!data.isComplete) {
+          isCheckingRef.current = false
+          return
+        }
+
+        // If complete and has answer, respond
         if (data.isQuestion && data.answer) {
-          // Clear current paragraph immediately so next speech doesn't include old text
+          // Stop polling while we process the answer
+          if (pollingIntervalRef.current) {
+            clearInterval(pollingIntervalRef.current)
+            pollingIntervalRef.current = null
+          }
+
+          setIsProcessing(true)
+
+          // Clear transcript for next input
           currentParagraphRef.current = ""
           setCurrentParagraph("")
+          lastCheckedTextRef.current = ""
 
           setTranscript((prev) => [
             ...prev,
@@ -150,20 +172,46 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
             { speaker: "assistant", text: data.answer },
           ])
           speakText(data.answer)
+
+          // Resume polling after speaking
+          setTimeout(() => {
+            if (isListeningRef.current) {
+              startPolling()
+            }
+            setIsProcessing(false)
+          }, 500)
         } else {
+          // Complete but not a question - clear and continue
           currentParagraphRef.current = ""
           setCurrentParagraph("")
+          lastCheckedTextRef.current = ""
         }
       } catch (error) {
         console.error("[v0] Error checking question:", error)
-        currentParagraphRef.current = ""
-        setCurrentParagraph("")
       } finally {
-        setIsProcessing(false)
+        isCheckingRef.current = false
       }
     },
     [speakText],
   )
+
+  const startPolling = useCallback(() => {
+    if (pollingIntervalRef.current) return
+
+    pollingIntervalRef.current = setInterval(() => {
+      const currentText = currentParagraphRef.current
+      if (currentText && currentText.trim().length > 2) {
+        checkForQuestionAndAnswer(currentText)
+      }
+    }, 500)
+  }, [checkForQuestionAndAnswer])
+
+  const stopPolling = useCallback(() => {
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current)
+      pollingIntervalRef.current = null
+    }
+  }, [])
 
   const startListening = useCallback(async () => {
     try {
@@ -220,21 +268,20 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
           }
         }
 
-        if (interimText) setInterimTranscript(interimText)
+        const combinedText = currentParagraphRef.current
+          ? currentParagraphRef.current + (finalTranscript ? " " + finalTranscript.trim() : "")
+          : finalTranscript.trim()
 
         if (finalTranscript) {
+          currentParagraphRef.current = combinedText
+          setCurrentParagraph(combinedText)
           setInterimTranscript("")
-          const newParagraph = currentParagraphRef.current
-            ? currentParagraphRef.current + " " + finalTranscript.trim()
-            : finalTranscript.trim()
-
-          currentParagraphRef.current = newParagraph
-          setCurrentParagraph(newParagraph)
-
-          if (checkQuestionTimeoutRef.current) clearTimeout(checkQuestionTimeoutRef.current)
-          checkQuestionTimeoutRef.current = setTimeout(() => {
-            checkForQuestionAndAnswer(newParagraph)
-          }, 400)
+        } else if (interimText) {
+          // Show interim as part of current paragraph for display
+          setInterimTranscript(interimText)
+          // Also include interim in polling check
+          const fullText = combinedText ? combinedText + " " + interimText : interimText
+          setCurrentParagraph(fullText)
         }
       }
 
@@ -253,14 +300,18 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
 
       recognition.start()
       recognitionRef.current = recognition
+
+      startPolling()
     } catch (error) {
       console.error("[v0] Failed to start listening:", error)
       setHasPermission(false)
     }
-  }, [checkForQuestionAndAnswer])
+  }, [startPolling])
 
   const stopListening = useCallback(() => {
     isListeningRef.current = false
+
+    stopPolling()
 
     if (recognitionRef.current) {
       recognitionRef.current.stop()
@@ -270,11 +321,7 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
     setInterimTranscript("")
     setCurrentParagraph("")
     currentParagraphRef.current = ""
-
-    if (checkQuestionTimeoutRef.current) {
-      clearTimeout(checkQuestionTimeoutRef.current)
-      checkQuestionTimeoutRef.current = null
-    }
+    lastCheckedTextRef.current = ""
 
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.cancel()
@@ -293,15 +340,15 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
     analyserRef.current = null
     setAudioLevel(0)
     setIsListening(false)
-  }, [])
+  }, [stopPolling])
 
   useEffect(() => {
     return () => {
       if (recognitionRef.current) recognitionRef.current.stop()
       if (typeof window !== "undefined" && "speechSynthesis" in window) window.speechSynthesis.cancel()
-      if (checkQuestionTimeoutRef.current) clearTimeout(checkQuestionTimeoutRef.current)
+      stopPolling()
     }
-  }, [])
+  }, [stopPolling])
 
   const requestPermission = useCallback(async () => {
     try {

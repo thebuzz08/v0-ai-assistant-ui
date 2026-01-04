@@ -7,7 +7,38 @@ export async function POST(request: Request) {
     const { text } = await request.json()
 
     if (!text || text.trim().length < 2) {
-      return Response.json({ isQuestion: false, answer: null })
+      return Response.json({ isComplete: false, isQuestion: false, answer: null })
+    }
+
+    const completenessCheck = await ai.models.generateContent({
+      model: "gemini-2.0-flash",
+      contents: `Analyze if this speech transcript is a COMPLETE question or statement, or if it's INCOMPLETE (user is still speaking mid-sentence).
+
+Examples:
+- "what is" → INCOMPLETE (missing the subject)
+- "who is the" → INCOMPLETE (missing the subject)  
+- "what time" → INCOMPLETE (missing context)
+- "how do I" → INCOMPLETE (missing the action)
+- "what is 3+3" → COMPLETE
+- "who is Elon Musk" → COMPLETE
+- "capital of France" → COMPLETE
+- "what happened yesterday" → COMPLETE
+- "hello" → COMPLETE (it's a complete statement)
+- "the weather is nice" → COMPLETE
+
+Respond with ONLY one word: COMPLETE or INCOMPLETE
+
+Text: "${text}"`,
+      config: {
+        temperature: 0,
+        maxOutputTokens: 10,
+      },
+    })
+
+    const completenessResult = completenessCheck.text?.trim().toUpperCase() || ""
+
+    if (completenessResult === "INCOMPLETE") {
+      return Response.json({ isComplete: false, isQuestion: false, answer: null })
     }
 
     const systemPrompt = `You are an ultra-fast voice assistant with real-time web search. Answer ALL questions instantly and concisely.
@@ -46,11 +77,12 @@ IMPORTANT: If it's a question about the world, facts, people, events - ANSWER IT
     const isNotQuestion = result === "NOT_A_QUESTION" || result === "PERSONAL_QUESTION"
 
     return Response.json({
+      isComplete: true,
       isQuestion: !isNotQuestion,
       answer: isNotQuestion ? null : result,
     })
   } catch (error) {
     console.error("[v0] API Error:", error)
-    return Response.json({ isQuestion: false, answer: null, error: String(error) }, { status: 500 })
+    return Response.json({ isComplete: false, isQuestion: false, answer: null, error: String(error) }, { status: 500 })
   }
 }
