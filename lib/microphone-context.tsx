@@ -187,6 +187,75 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
     [],
   )
 
+  const speakText = useCallback((text: string) => {
+    if ("speechSynthesis" in window) {
+      window.speechSynthesis.cancel()
+      const utterance = new SpeechSynthesisUtterance(text)
+      if (bestVoiceRef.current) utterance.voice = bestVoiceRef.current
+      utterance.rate = 1.05
+      utterance.onstart = () => setIsSpeaking(true)
+      utterance.onend = () => {
+        setIsSpeaking(false)
+        currentUtteranceRef.current = null
+      }
+      utterance.onerror = () => {
+        setIsSpeaking(false)
+        currentUtteranceRef.current = null
+      }
+      currentUtteranceRef.current = utterance
+      window.speechSynthesis.speak(utterance)
+    }
+  }, [])
+
+  const checkForQuestionAndAnswer = useCallback(
+    async (paragraph: string) => {
+      if (!paragraph.trim() || !aiEnabled) return
+
+      setIsProcessing(true)
+      try {
+        const response = await fetch("/api/check-question", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: paragraph }),
+        })
+
+        const data = await response.json()
+
+        if (data.isQuestion && data.answer) {
+          currentParagraphRef.current = ""
+          setCurrentParagraph("")
+
+          setTranscript((prev) => [...prev, { speaker: "user", text: paragraph }])
+
+          // Stream AI response
+          const answerStream = await fetch("/api/check-question", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: paragraph, stream: true }),
+          })
+
+          if (answerStream.ok) {
+            const reader = answerStream.body?.getReader()
+            if (reader) {
+              let fullAnswer = ""
+              while (true) {
+                const { done, value } = await reader.read()
+                if (done) break
+                const chunk = new TextDecoder().decode(value)
+                fullAnswer += chunk
+                setTranscript((prev) => [...prev, { speaker: "assistant", text: fullAnswer }])
+                speakText(fullAnswer)
+              }
+            }
+          }
+        }
+      } finally {
+        setIsProcessing(false)
+      }
+    },
+    [aiEnabled, speakText],
+  )
+
   useEffect(() => {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) return
 
@@ -303,251 +372,19 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
   const { events: calendarEvents, fetchEvents, createEvent, deleteEvent } = useCalendar()
   const { notes } = useNotes()
 
-  const checkForQuestionAndAnswer = useCallback(
-    async (text: string) => {
-      if (!aiEnabled) return
-      if (isCheckingRef.current) return
-      if (text.trim().length < 3) return
-
-      console.log("[v0] checkForQuestionAndAnswer called with:", text)
-
-      isCheckingRef.current = true
-      setIsProcessing(true)
-
-      const wordCount = text.trim().split(/\s+/).length
-      incrementStat("wordsTranscribed", wordCount)
-
-      try {
-        const cachedAnswer = getClientCachedResponse(text)
-        if (cachedAnswer) {
-          console.log("[v0] Client cache hit:", text)
-
-          const userEntry: TranscriptEntry = {
-            speaker: "user",
-            text: text.trim(),
-            timestamp: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
-          }
-          setTranscript((prev) => [...prev, userEntry])
-
-          const assistantEntry: TranscriptEntry = {
-            speaker: "assistant",
-            text: cachedAnswer,
-            timestamp: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
-          }
-          setTranscript((prev) => [...prev, assistantEntry])
-
-          // Speak cached response immediately
-          if ("speechSynthesis" in window) {
-            window.speechSynthesis.cancel()
-            const utterance = new SpeechSynthesisUtterance(cachedAnswer)
-            if (bestVoiceRef.current) utterance.voice = bestVoiceRef.current
-            utterance.rate = 1.05
-            utterance.onstart = () => setIsSpeaking(true)
-            utterance.onend = () => {
-              setIsSpeaking(false)
-              currentUtteranceRef.current = null
-              setFinalTranscript("")
-              recentContextRef.current = []
-            }
-            window.speechSynthesis.speak(utterance)
-          }
-
-          recentContextRef.current = []
-          setCurrentParagraph("")
-          currentParagraphRef.current = ""
-          isCheckingRef.current = false
-          setIsProcessing(false)
-          return
-        }
-
-        const looksLikeFollowUp = /^(and|also|what about|how about|tell me more|more about|why|but|so|then)\b/i.test(
-          text.trim(),
-        )
-
-        const contextToSend =
-          looksLikeFollowUp && recentContextRef.current.length > 0
-            ? recentContextRef.current.slice(-2).join(" ") + " " + text
-            : text
-
-        console.log("[v0] Sending to API:", contextToSend)
-
-        const response = await fetch("/api/check-question", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            text: contextToSend,
-            conversationHistory: conversationHistoryRef.current.slice(-6),
-            safetyMode,
-            lastMentionedEvent: lastMentionedEventRef.current,
-            lastCreatedEvents: lastCreatedEventsRef.current,
-            notesContext: notesContextRef.current?.slice(0, 5),
-            calendarEvents: calendarContextRef.current,
-            customInstructions,
-            pendingDeletion: pendingDeletionRef.current,
-            pendingBulkDeletion: pendingBulkDeletionRef.current,
-            pendingSpecificDeletion: pendingSpecificDeletionRef.current,
-            localDateTime: {
-              date: new Date().toLocaleDateString("en-US", {
-                weekday: "long",
-                month: "long",
-                day: "numeric",
-                year: "numeric",
-              }),
-              time: new Date().toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }),
-              timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-              isoDate: new Date().toLocaleDateString("en-CA"), // YYYY-MM-DD format
-            },
-          }),
-        })
-
-        if (response.ok) {
-          const data = await response.json()
-          console.log("[v0] API response:", data)
-          const {
-            isQuestion,
-            answer,
-            pendingDeletion,
-            pendingBulkDeletion,
-            lastMentionedEvent,
-            eventCreated,
-            eventDeleted,
-            lastCreatedEvents,
-            pendingSpecificDeletion,
-            scheduledEvent,
-            refreshCalendar,
-            cached,
-          } = data
-
-          if (isQuestion && answer && !cached) {
-            setClientCachedResponse(text, answer)
-          }
-
-          if (eventCreated) {
-            incrementStat("calendarEventsCreated")
-          }
-          if (eventDeleted) {
-            incrementStat("calendarEventsDeleted")
-          }
-
-          pendingDeletionRef.current = pendingDeletion || null
-          pendingBulkDeletionRef.current = pendingBulkDeletion || null
-          pendingSpecificDeletionRef.current = pendingSpecificDeletion || []
-
-          console.log("[v0] API response - lastMentionedEvent:", lastMentionedEvent)
-          console.log("[v0] API response - lastCreatedEvents:", lastCreatedEvents)
-
-          if (lastMentionedEvent) {
-            console.log("[v0] Storing lastMentionedEvent:", lastMentionedEvent)
-            lastMentionedEventRef.current = lastMentionedEvent
-          }
-
-          if (lastCreatedEvents !== undefined) {
-            lastCreatedEventsRef.current = lastCreatedEvents
-          }
-          // If a single event was scheduled, add it to lastCreatedEvents
-          if (scheduledEvent && eventCreated) {
-            lastCreatedEventsRef.current = [
-              ...lastCreatedEventsRef.current,
-              {
-                title: scheduledEvent.title,
-                date: scheduledEvent.date,
-                time: scheduledEvent.time,
-              },
-            ]
-          }
-
-          if (isQuestion && answer) {
-            const userEntry: TranscriptEntry = {
-              speaker: "user",
-              text: text.trim(),
-              timestamp: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
-            }
-            setTranscript((prev) => [...prev, userEntry])
-
-            recentContextRef.current = []
-
-            if (isSpeaking && "speechSynthesis" in window) {
-              window.speechSynthesis.cancel()
-              setIsSpeaking(false)
-            }
-
-            incrementStat("conversations")
-            incrementStat("aiResponses")
-
-            conversationHistoryRef.current.push({ role: "user", text: text.trim() })
-            conversationHistoryRef.current.push({ role: "assistant", text: answer })
-            if (conversationHistoryRef.current.length > 10) {
-              conversationHistoryRef.current = conversationHistoryRef.current.slice(-10)
-            }
-
-            const assistantEntry: TranscriptEntry = {
-              speaker: "assistant",
-              text: answer,
-              timestamp: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
-            }
-            setTranscript((prev) => [...prev, assistantEntry])
-
-            if ("speechSynthesis" in window) {
-              window.speechSynthesis.cancel()
-
-              const utterance = new SpeechSynthesisUtterance(answer)
-
-              if (bestVoiceRef.current) {
-                utterance.voice = bestVoiceRef.current
-              }
-
-              utterance.rate = 1.05
-              utterance.pitch = 1.0
-              utterance.volume = 1.0
-
-              utterance.onstart = () => {
-                setIsSpeaking(true)
-              }
-              utterance.onend = () => {
-                setIsSpeaking(false)
-                currentUtteranceRef.current = null
-                setFinalTranscript("")
-                recentContextRef.current = []
-              }
-              utterance.onerror = () => {
-                setIsSpeaking(false)
-                currentUtteranceRef.current = null
-              }
-
-              currentUtteranceRef.current = utterance
-              speechSynthesisRef.current = utterance
-              window.speechSynthesis.speak(utterance)
-            }
-
-            const fullConversation = `User: ${text.trim()}\nAssistant: ${answer}`
-            if (onConversationCompleteRef.current) {
-              onConversationCompleteRef.current(fullConversation)
-            }
-
-            if (refreshCalendar) {
-              window.dispatchEvent(new CustomEvent("refreshCalendar"))
-            }
-          } else {
-            recentContextRef.current.push(text.trim())
-            // Keep only last 3 non-question segments
-            if (recentContextRef.current.length > 3) {
-              recentContextRef.current = recentContextRef.current.slice(-3)
-            }
-          }
-        }
-      } catch (error) {
-        console.error("Error checking for question:", error)
-      } finally {
-        isCheckingRef.current = false
-        setIsProcessing(false)
-      }
-    },
-    [aiEnabled, incrementStat, isSpeaking, safetyMode, customInstructions],
-  )
-
   useEffect(() => {
-    checkForQuestionAndAnswerRef.current = checkForQuestionAndAnswer
-  }, [checkForQuestionAndAnswer])
+    return () => {
+      if (recognitionRef.current) {
+        recognitionRef.current.stop()
+      }
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        window.speechSynthesis.cancel()
+      }
+      if (checkQuestionTimeoutRef.current) {
+        clearTimeout(checkQuestionTimeoutRef.current)
+      }
+    }
+  }, [])
 
   const startListening = useCallback(async () => {
     listeningStartTimeRef.current = Date.now()
@@ -726,20 +563,6 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
     customInstructionsRef.current = instructions
     if (typeof window !== "undefined") {
       localStorage.setItem("customInstructions", instructions)
-    }
-  }, [])
-
-  useEffect(() => {
-    return () => {
-      if (recognitionRef.current) {
-        recognitionRef.current.stop()
-      }
-      if (typeof window !== "undefined" && "speechSynthesis" in window) {
-        window.speechSynthesis.cancel()
-      }
-      if (checkQuestionTimeoutRef.current) {
-        clearTimeout(checkQuestionTimeoutRef.current)
-      }
     }
   }, [])
 
