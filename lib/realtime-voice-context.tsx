@@ -185,6 +185,8 @@ If unsure whether the user is talking TO you, err on the side of silence.`
         throw new Error(`Failed to get realtime token: ${errorData.details || errorData.error}`)
       }
       const tokenData = await tokenResponse.json()
+      console.log("[v0] Token data received:", { model: tokenData.model, hasSecret: !!tokenData.client_secret })
+
       const clientSecret = tokenData.client_secret?.value
 
       if (!clientSecret) {
@@ -192,7 +194,10 @@ If unsure whether the user is talking TO you, err on the side of silence.`
         throw new Error("No client secret in response")
       }
 
-      const wsUrl = `wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17`
+      const model = tokenData.model || "gpt-4o-realtime-preview"
+      const wsUrl = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(model)}`
+      console.log("[v0] Connecting to WebSocket:", wsUrl)
+
       const ws = new WebSocket(wsUrl, ["realtime", `openai-insecure-api-key.${clientSecret}`])
 
       ws.addEventListener("open", async () => {
@@ -200,6 +205,7 @@ If unsure whether the user is talking TO you, err on the side of silence.`
         setIsConnected(true)
 
         const systemPrompt = buildSystemPrompt(customInstructionsRef.current, calendarEvents || [])
+
         ws.send(
           JSON.stringify({
             type: "session.update",
@@ -213,6 +219,9 @@ If unsure whether the user is talking TO you, err on the side of silence.`
               },
               input_audio_format: "pcm16",
               output_audio_format: "pcm16",
+              input_audio_transcription: {
+                model: "whisper-1",
+              },
               voice: "verse",
               temperature: 0.8,
               max_response_output_tokens: 1024,

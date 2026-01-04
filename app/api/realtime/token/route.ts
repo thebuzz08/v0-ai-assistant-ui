@@ -9,7 +9,7 @@ export async function GET() {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "gpt-4o-realtime-preview-2024-12-17",
+        model: "gpt-4o-realtime-preview",
         voice: "verse",
       }),
     })
@@ -21,6 +21,7 @@ export async function GET() {
     }
 
     const data = await response.json()
+    console.log("[v0] Session created, model:", data.model)
     return NextResponse.json(data)
   } catch (error) {
     console.error("[v0] Error creating realtime session:", error)
