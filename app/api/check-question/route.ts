@@ -796,7 +796,40 @@ Your response:`
     const result = response.text?.trim() || ""
     const shouldStaySilent = result.toUpperCase().replace(/[^A-Z]/g, "") === "SILENT" || result.length === 0
 
-    if (!shouldStaySilent && isSimple) {
+    const validateSearchResults = (answer: string, query: string): boolean => {
+      const query_lower = query.toLowerCase()
+
+      // Famous/obvious people always answer
+      const FAMOUS_KEYWORDS = [
+        "elon musk",
+        "steve jobs",
+        "bill gates",
+        "taylor swift",
+        "kim kardashian",
+        "donald trump",
+        "oprah",
+        "beyonce",
+        "lebron",
+        "messi",
+        "ronaldo",
+      ]
+      if (FAMOUS_KEYWORDS.some((k) => query_lower.includes(k))) return true
+
+      // Generic names - only answer if search returned ONE clear result
+      const ambiguous = /^who is [a-z\s]+\?$/i.test(query)
+      if (ambiguous) {
+        // If answer mentions multiple people or is too generic, silence it
+        const multipleMatches = (answer.match(/\b(or|also known|another|different)/gi) || []).length > 1
+        if (multipleMatches) return false
+
+        // If answer is vague ("could refer to", "various", "many"), silence it
+        if (/could refer|various|many|multiple|several|different people/i.test(answer)) return false
+      }
+
+      return true
+    }
+
+    if (!shouldStaySilent && isSimple && validateSearchResults(result, text)) {
       setCachedResponse(cacheKey, result)
     }
 
