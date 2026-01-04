@@ -198,9 +198,11 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
   const startPolling = useCallback(() => {
     if (pollingIntervalRef.current) return
 
+    console.log("[v0] Starting polling for questions")
     pollingIntervalRef.current = setInterval(() => {
       const currentText = currentParagraphRef.current
       if (currentText && currentText.trim().length > 2) {
+        console.log("[v0] Polling check:", currentText)
         checkForQuestionAndAnswer(currentText)
       }
     }, 500)
@@ -208,6 +210,7 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
 
   const stopPolling = useCallback(() => {
     if (pollingIntervalRef.current) {
+      console.log("[v0] Stopping polling")
       clearInterval(pollingIntervalRef.current)
       pollingIntervalRef.current = null
     }
