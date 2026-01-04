@@ -111,6 +111,24 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
     window.speechSynthesis.speak(utterance)
   }, [])
 
+  const speakChunk = useCallback((text: string) => {
+    if (!("speechSynthesis" in window)) return
+    if (!text.trim()) return
+
+    const utterance = new SpeechSynthesisUtterance(text)
+    if (bestVoiceRef.current) utterance.voice = bestVoiceRef.current
+    utterance.rate = 1.15 // Slightly faster for snappier feel
+    utterance.volume = 1
+    utterance.onstart = () => setIsSpeaking(true)
+    utterance.onend = () => {
+      // Only set speaking false if queue is empty
+      if (window.speechSynthesis.pending === false) {
+        setIsSpeaking(false)
+      }
+    }
+    window.speechSynthesis.speak(utterance)
+  }, [])
+
   const answerQuestion = useCallback(
     async (question: string) => {
       if (isProcessingRef.current) return
@@ -146,6 +164,8 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
         const decoder = new TextDecoder()
         let fullText = ""
         let addedAssistantEntry = false
+        const spokenLength = 0
+        let sentenceBuffer = ""
 
         while (true) {
           const { done, value } = await reader.read()
@@ -163,6 +183,7 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
                 const parsed = JSON.parse(data)
                 if (parsed.token) {
                   fullText += parsed.token
+                  sentenceBuffer += parsed.token
 
                   if (!addedAssistantEntry) {
                     setTranscript((prev) => [...prev, { speaker: "assistant", text: fullText }])
@@ -174,14 +195,25 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
                       return newTranscript
                     })
                   }
+
+                  const sentenceEnd = sentenceBuffer.match(/[.!?]\s*$/)
+                  const hasEnoughWords = sentenceBuffer.split(/\s+/).length >= 4
+
+                  if (sentenceEnd || (hasEnoughWords && sentenceBuffer.includes(","))) {
+                    const textToSpeak = sentenceBuffer.trim()
+                    if (textToSpeak) {
+                      speakChunk(textToSpeak)
+                      sentenceBuffer = ""
+                    }
+                  }
                 }
               } catch {}
             }
           }
         }
 
-        if (fullText) {
-          speakText(fullText)
+        if (sentenceBuffer.trim()) {
+          speakChunk(sentenceBuffer.trim())
         }
       } catch (error) {
         console.error("[v0] Error:", error)
@@ -191,7 +223,7 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
         setIsProcessing(false)
       }
     },
-    [speakText],
+    [speakChunk],
   )
 
   const checkForCompleteQuestion = useCallback(async () => {
@@ -305,7 +337,7 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
       recognition.start()
       recognitionRef.current = recognition
 
-      pollIntervalRef.current = setInterval(checkForCompleteQuestion, 300)
+      pollIntervalRef.current = setInterval(checkForCompleteQuestion, 200)
     } catch (error) {
       console.error("[v0] Failed to start listening:", error)
       setHasPermission(false)
