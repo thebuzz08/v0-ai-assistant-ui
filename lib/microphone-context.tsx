@@ -451,18 +451,14 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
             ]
           }
 
-          const userEntry: TranscriptEntry = {
-            speaker: "user",
-            text: text.trim(),
-            timestamp: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
-          }
-          setTranscript((prev) => [...prev, userEntry])
-
-          // Clear paragraph buffer for next input
-          setCurrentParagraph("")
-          currentParagraphRef.current = ""
-
           if (isQuestion && answer) {
+            const userEntry: TranscriptEntry = {
+              speaker: "user",
+              text: text.trim(),
+              timestamp: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+            }
+            setTranscript((prev) => [...prev, userEntry])
+
             recentContextRef.current = []
 
             if (isSpeaking && "speechSynthesis" in window) {
