@@ -239,6 +239,7 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
       recognition.continuous = true
       recognition.interimResults = true
       recognition.lang = "en-US"
+      recognition.maxAlternatives = 3 // Add maxAlternatives for better accuracy
 
       recognition.onresult = (event: SpeechRecognitionEvent) => {
         let finalText = ""
@@ -247,7 +248,11 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
         for (let i = event.resultIndex; i < event.results.length; i++) {
           const result = event.results[i]
           if (result.isFinal) {
-            finalText += result[0].transcript
+            const bestAlternative = result[0]
+            // Only accept if confidence is decent (or if confidence not provided, accept anyway)
+            if (bestAlternative.confidence === 0 || bestAlternative.confidence > 0.5) {
+              finalText += bestAlternative.transcript
+            }
           } else {
             interimText += result[0].transcript
           }
