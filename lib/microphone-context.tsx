@@ -1,7 +1,14 @@
 "use client"
 
 import { createContext, useContext, useState, useCallback, useRef, useEffect, type ReactNode } from "react"
-import type { SpeechRecognition } from "web-speech-api"
+import type { SpeechRecognition, SpeechRecognitionEvent, SpeechRecognitionErrorEvent } from "web-speech-api"
+
+declare global {
+  interface Window {
+    SpeechRecognition: new () => SpeechRecognition
+    webkitSpeechRecognition: new () => SpeechRecognition
+  }
+}
 
 export interface TranscriptEntry {
   speaker: "user" | "assistant"
@@ -38,13 +45,14 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
   const audioContextRef = useRef<AudioContext | null>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
   const animationFrameRef = useRef<number | null>(null)
+  const recognitionRef = useRef<SpeechRecognition | null>(null)
   const currentParagraphRef = useRef("")
   const isListeningRef = useRef(false)
   const bestVoiceRef = useRef<SpeechSynthesisVoice | null>(null)
   const isProcessingRef = useRef(false)
-  const silenceTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
+  const lastProcessedTextRef = useRef("")
   const answeredQuestionsRef = useRef<Set<string>>(new Set())
-  const recognitionRef = useRef<SpeechRecognition | null>(null)
 
   useEffect(() => {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) return
@@ -99,7 +107,6 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
       isProcessingRef.current = true
       setIsProcessing(true)
 
-      // Clear the current paragraph to prevent re-detection
       currentParagraphRef.current = ""
       setCurrentParagraph("")
       setInterimTranscript("")
@@ -112,6 +119,8 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ text: question }),
         })
+
+        if (!response.ok) throw new Error("API error")
 
         const reader = response.body?.getReader()
         if (!reader) throw new Error("No reader")
@@ -174,11 +183,6 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
 
     try {
       const response = await fetch(`/api/check-question?text=${encodeURIComponent(text)}`)
-
-      if (!response.ok) {
-        return
-      }
-
       const data = await response.json()
 
       if (data.isComplete && data.question) {
@@ -196,13 +200,8 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
 
   const startListening = useCallback(async () => {
     try {
-      // Get microphone stream for audio level visualization
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-        },
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
       })
       mediaStreamRef.current = stream
 
@@ -226,76 +225,67 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
       }
       updateLevel()
 
-      // Set up Web Speech API
+      isListeningRef.current = true
+      setIsListening(true)
+      setHasPermission(true)
+
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
       if (!SpeechRecognition) {
-        throw new Error("Speech recognition not supported")
+        console.error("[v0] Web Speech API not supported")
+        return
       }
 
       const recognition = new SpeechRecognition()
-      recognitionRef.current = recognition
-
       recognition.continuous = true
       recognition.interimResults = true
       recognition.lang = "en-US"
-      recognition.maxAlternatives = 1
+      recognition.maxAlternatives = 3 // Add maxAlternatives for better accuracy
 
-      recognition.onresult = (event) => {
-        let interim = ""
-        let final = ""
+      recognition.onresult = (event: SpeechRecognitionEvent) => {
+        let finalText = ""
+        let interimText = ""
 
         for (let i = event.resultIndex; i < event.results.length; i++) {
           const result = event.results[i]
           if (result.isFinal) {
-            final += result[0].transcript
+            const bestAlternative = result[0]
+            // Only accept if confidence is decent (or if confidence not provided, accept anyway)
+            if (bestAlternative.confidence === 0 || bestAlternative.confidence > 0.5) {
+              finalText += bestAlternative.transcript
+            }
           } else {
-            interim += result[0].transcript
+            interimText += result[0].transcript
           }
         }
 
-        if (final) {
+        if (finalText) {
           currentParagraphRef.current = currentParagraphRef.current
-            ? currentParagraphRef.current + " " + final.trim()
-            : final.trim()
+            ? currentParagraphRef.current + " " + finalText.trim()
+            : finalText.trim()
           setCurrentParagraph(currentParagraphRef.current)
-
-          // Reset silence timeout
-          if (silenceTimeoutRef.current) {
-            clearTimeout(silenceTimeoutRef.current)
-          }
-
-          // Check for question after brief silence
-          silenceTimeoutRef.current = setTimeout(() => {
-            checkForCompleteQuestion()
-          }, 700)
+          setInterimTranscript("")
+        } else if (interimText) {
+          setInterimTranscript(interimText)
         }
-
-        setInterimTranscript(interim)
       }
 
-      recognition.onerror = (event) => {
+      recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
         console.error("[v0] Speech recognition error:", event.error)
-        if (event.error === "not-allowed") {
-          setHasPermission(false)
-        }
+        if (event.error === "not-allowed") setHasPermission(false)
       }
 
       recognition.onend = () => {
-        // Restart if still listening
         if (isListeningRef.current) {
           try {
             recognition.start()
-          } catch (e) {
-            console.error("[v0] Failed to restart recognition:", e)
-          }
+          } catch {}
         }
       }
 
       recognition.start()
+      recognitionRef.current = recognition
 
-      isListeningRef.current = true
-      setIsListening(true)
-      setHasPermission(true)
+      pollIntervalRef.current = setInterval(checkForCompleteQuestion, 500)
     } catch (error) {
       console.error("[v0] Failed to start listening:", error)
       setHasPermission(false)
@@ -305,12 +295,11 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
   const stopListening = useCallback(() => {
     isListeningRef.current = false
 
-    if (silenceTimeoutRef.current) {
-      clearTimeout(silenceTimeoutRef.current)
-      silenceTimeoutRef.current = null
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current)
+      pollIntervalRef.current = null
     }
 
-    // Stop Web Speech API
     if (recognitionRef.current) {
       recognitionRef.current.stop()
       recognitionRef.current = null
@@ -343,7 +332,7 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     return () => {
       if (recognitionRef.current) recognitionRef.current.stop()
-      if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current)
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current)
       if (typeof window !== "undefined" && "speechSynthesis" in window) window.speechSynthesis.cancel()
     }
   }, [])
