@@ -794,95 +794,75 @@ Your response:`
       modelConfig.tools = [{ googleSearch: {} }]
     }
 
-    const encoder = new TextEncoder()
-    let streamText = ""
-
-    const stream = new ReadableStream({
-      async start(controller) {
-        try {
-          const response = await ai.models.generateContent({
-            model,
-            contents: systemPrompt,
-            config: modelConfig,
-          })
-
-          if (response.text) {
-            for (const char of response.text) {
-              streamText += char
-              controller.enqueue(encoder.encode(JSON.stringify({ chunk: char }) + "\n"))
-              await new Promise((resolve) => setTimeout(resolve, 20))
-            }
-          }
-
-          const result = response.text?.trim() || ""
-          const shouldStaySilent = result.toUpperCase().replace(/[^A-Z]/g, "") === "SILENT" || result.length === 0
-
-          if (!shouldStaySilent && isSimple) {
-            setCachedResponse(cacheKey, result)
-          }
-
-          let mentionedEvent = lastMentionedEvent
-          if (!shouldStaySilent && calendarEvents?.length > 0) {
-            const resultLower = result.toLowerCase()
-
-            for (const event of calendarEvents) {
-              if (!event.title) continue
-              const titleLower = event.title.toLowerCase()
-
-              if (
-                resultLower.includes(titleLower) ||
-                titleLower
-                  .split(/\s+/)
-                  .filter((w: string) => w.length > 2)
-                  .some((w: string) => resultLower.includes(w))
-              ) {
-                mentionedEvent = {
-                  title: event.title,
-                  date: event.date,
-                  time: event.time,
-                  id: event.id,
-                }
-                break
-              }
-            }
-
-            if (/next|upcoming|soonest/.test(text.toLowerCase())) {
-              const now = new Date()
-              let closest: any = null
-              let closestDiff = Number.POSITIVE_INFINITY
-
-              for (const event of calendarEvents) {
-                const eventTime = new Date(`${event.date}T${event.time || "00:00"}:00`)
-                const diff = eventTime.getTime() - now.getTime()
-                if (diff > 0 && diff < closestDiff) {
-                  closestDiff = diff
-                  closest = event
-                }
-              }
-
-              if (closest) {
-                mentionedEvent = {
-                  title: closest.title,
-                  date: closest.date,
-                  time: closest.time,
-                  id: closest.id,
-                }
-              }
-            }
-          }
-
-          controller.close()
-        } catch (error) {
-          controller.error(error)
-        }
-      },
+    const response = await ai.models.generateContent({
+      model,
+      contents: systemPrompt,
+      config: modelConfig,
     })
 
-    return new Response(stream, {
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache",
-      },
+    const result = response.text?.trim() || ""
+    const shouldStaySilent = result.toUpperCase().replace(/[^A-Z]/g, "") === "SILENT" || result.length === 0
+
+    if (!shouldStaySilent && isSimple) {
+      setCachedResponse(cacheKey, result)
+    }
+
+    let mentionedEvent = lastMentionedEvent
+    if (!shouldStaySilent && calendarEvents?.length > 0) {
+      const resultLower = result.toLowerCase()
+
+      for (const event of calendarEvents) {
+        if (!event.title) continue
+        const titleLower = event.title.toLowerCase()
+
+        if (
+          resultLower.includes(titleLower) ||
+          titleLower
+            .split(/\s+/)
+            .filter((w: string) => w.length > 2)
+            .some((w: string) => resultLower.includes(w))
+        ) {
+          mentionedEvent = {
+            title: event.title,
+            date: event.date,
+            time: event.time,
+            id: event.id,
+          }
+          break
+        }
+      }
+
+      if (/next|upcoming|soonest/.test(text.toLowerCase())) {
+        const now = new Date()
+        let closest: any = null
+        let closestDiff = Number.POSITIVE_INFINITY
+
+        for (const event of calendarEvents) {
+          const eventTime = new Date(`${event.date}T${event.time || "00:00"}:00`)
+          const diff = eventTime.getTime() - now.getTime()
+          if (diff > 0 && diff < closestDiff) {
+            closestDiff = diff
+            closest = event
+          }
+        }
+
+        if (closest) {
+          mentionedEvent = {
+            title: closest.title,
+            date: closest.date,
+            time: closest.time,
+            id: closest.id,
+          }
+        }
+      }
+    }
+
+    return Response.json({
+      isQuestion: true,
+      answer: shouldStaySilent ? null : result,
+      lastMentionedEvent: mentionedEvent,
+      lastCreatedEvents,
+      model,
     })
   } catch (error) {
     console.error("[v0] API Error:", error)

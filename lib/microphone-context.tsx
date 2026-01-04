@@ -395,52 +395,141 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
           }),
         })
 
-        if (response.body) {
-          let assistantText = ""
-          let hasStartedSpeaking = false
-          const reader = response.body.getReader()
-          const decoder = new TextDecoder()
+        if (response.ok) {
+          const data = await response.json()
+          console.log("[v0] API response:", data)
+          const {
+            isQuestion,
+            answer,
+            pendingDeletion,
+            pendingBulkDeletion,
+            lastMentionedEvent,
+            eventCreated,
+            eventDeleted,
+            lastCreatedEvents,
+            pendingSpecificDeletion,
+            scheduledEvent,
+            refreshCalendar,
+            cached,
+          } = data
 
-          try {
-            while (true) {
-              const { done, value } = await reader.read()
-              if (done) break
+          if (isQuestion && answer && !cached) {
+            setClientCachedResponse(text, answer)
+          }
 
-              const chunk = decoder.decode(value)
-              const lines = chunk.split("\n").filter((l) => l.trim())
+          if (eventCreated) {
+            incrementStat("calendarEventsCreated")
+          }
+          if (eventDeleted) {
+            incrementStat("calendarEventsDeleted")
+          }
 
-              for (const line of lines) {
-                try {
-                  const data = JSON.parse(line)
-                  if (data.chunk) {
-                    assistantText += data.chunk
-                    setTranscript((prev) => {
-                      const copy = [...prev]
-                      const lastEntry = copy[copy.length - 1]
-                      if (lastEntry?.speaker === "assistant") {
-                        lastEntry.text = assistantText
-                      }
-                      return copy
-                    })
+          pendingDeletionRef.current = pendingDeletion || null
+          pendingBulkDeletionRef.current = pendingBulkDeletion || null
+          pendingSpecificDeletionRef.current = pendingSpecificDeletion || []
 
-                    if (!hasStartedSpeaking && assistantText.split(" ").length > 2) {
-                      hasStartedSpeaking = true
-                      if ("speechSynthesis" in window) {
-                        window.speechSynthesis.cancel()
-                        const utterance = new SpeechSynthesisUtterance(assistantText)
-                        if (bestVoiceRef.current) utterance.voice = bestVoiceRef.current
-                        utterance.rate = 1.05
-                        utterance.onstart = () => setIsSpeaking(true)
-                        utterance.onend = () => setIsSpeaking(false)
-                        window.speechSynthesis.speak(utterance)
-                      }
-                    }
-                  }
-                } catch (e) {}
-              }
+          console.log("[v0] API response - lastMentionedEvent:", lastMentionedEvent)
+          console.log("[v0] API response - lastCreatedEvents:", lastCreatedEvents)
+
+          if (lastMentionedEvent) {
+            console.log("[v0] Storing lastMentionedEvent:", lastMentionedEvent)
+            lastMentionedEventRef.current = lastMentionedEvent
+          }
+
+          if (lastCreatedEvents !== undefined) {
+            lastCreatedEventsRef.current = lastCreatedEvents
+          }
+          // If a single event was scheduled, add it to lastCreatedEvents
+          if (scheduledEvent && eventCreated) {
+            lastCreatedEventsRef.current = [
+              ...lastCreatedEventsRef.current,
+              {
+                title: scheduledEvent.title,
+                date: scheduledEvent.date,
+                time: scheduledEvent.time,
+              },
+            ]
+          }
+
+          const userEntry: TranscriptEntry = {
+            speaker: "user",
+            text: text.trim(),
+            timestamp: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+          }
+          setTranscript((prev) => [...prev, userEntry])
+
+          // Clear paragraph buffer for next input
+          setCurrentParagraph("")
+          currentParagraphRef.current = ""
+
+          if (isQuestion && answer) {
+            recentContextRef.current = []
+
+            if (isSpeaking && "speechSynthesis" in window) {
+              window.speechSynthesis.cancel()
+              setIsSpeaking(false)
             }
-          } finally {
-            reader.releaseLock()
+
+            incrementStat("conversations")
+            incrementStat("aiResponses")
+
+            conversationHistoryRef.current.push({ role: "user", text: text.trim() })
+            conversationHistoryRef.current.push({ role: "assistant", text: answer })
+            if (conversationHistoryRef.current.length > 10) {
+              conversationHistoryRef.current = conversationHistoryRef.current.slice(-10)
+            }
+
+            const assistantEntry: TranscriptEntry = {
+              speaker: "assistant",
+              text: answer,
+              timestamp: new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }),
+            }
+            setTranscript((prev) => [...prev, assistantEntry])
+
+            if ("speechSynthesis" in window) {
+              window.speechSynthesis.cancel()
+
+              const utterance = new SpeechSynthesisUtterance(answer)
+
+              if (bestVoiceRef.current) {
+                utterance.voice = bestVoiceRef.current
+              }
+
+              utterance.rate = 1.05
+              utterance.pitch = 1.0
+              utterance.volume = 1.0
+
+              utterance.onstart = () => {
+                setIsSpeaking(true)
+              }
+              utterance.onend = () => {
+                setIsSpeaking(false)
+                currentUtteranceRef.current = null
+              }
+              utterance.onerror = () => {
+                setIsSpeaking(false)
+                currentUtteranceRef.current = null
+              }
+
+              currentUtteranceRef.current = utterance
+              speechSynthesisRef.current = utterance
+              window.speechSynthesis.speak(utterance)
+            }
+
+            const fullConversation = `User: ${text.trim()}\nAssistant: ${answer}`
+            if (onConversationCompleteRef.current) {
+              onConversationCompleteRef.current(fullConversation)
+            }
+
+            if (refreshCalendar) {
+              window.dispatchEvent(new CustomEvent("refreshCalendar"))
+            }
+          } else {
+            recentContextRef.current.push(text.trim())
+            // Keep only last 3 non-question segments
+            if (recentContextRef.current.length > 3) {
+              recentContextRef.current = recentContextRef.current.slice(-3)
+            }
           }
         }
       } catch (error) {
