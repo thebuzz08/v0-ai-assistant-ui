@@ -59,6 +59,50 @@ async function searchTavily(query: string): Promise<string> {
   }
 }
 
+export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url)
+  const text = searchParams.get("text")
+
+  if (!text || text.trim().length < 3) {
+    return Response.json({ isComplete: false, question: null })
+  }
+
+  try {
+    // Fast completeness check with smaller model
+    const response = await groq.chat.completions.create({
+      model: "llama-3.1-8b-instant",
+      messages: [
+        {
+          role: "system",
+          content: `Analyze if this speech transcript contains a COMPLETE question that can be answered.
+Return JSON: {"isComplete": true/false, "question": "the complete question" or null}
+- isComplete=true if there's a question that's finished being asked
+- isComplete=false if the person is mid-sentence or hasn't finished their thought
+- Extract just the question part if there's extra text
+
+Examples:
+"what is three plus three" -> {"isComplete": true, "question": "what is three plus three"}
+"what is the" -> {"isComplete": false, "question": null}
+"hey so I was wondering what" -> {"isComplete": false, "question": null}
+"what time is it in Tokyo" -> {"isComplete": true, "question": "what time is it in Tokyo"}
+"hello" -> {"isComplete": false, "question": null}
+"thanks for that so what is" -> {"isComplete": false, "question": null}`,
+        },
+        { role: "user", content: text },
+      ],
+      temperature: 0,
+      max_tokens: 100,
+      response_format: { type: "json_object" },
+    })
+
+    const result = JSON.parse(response.choices[0]?.message?.content || '{"isComplete": false, "question": null}')
+    return Response.json(result)
+  } catch (error) {
+    console.error("[v0] Completeness check error:", error)
+    return Response.json({ isComplete: false, question: null })
+  }
+}
+
 export async function POST(request: Request) {
   try {
     const { text } = await request.json()
@@ -94,7 +138,6 @@ ${searchContext ? `\nSEARCH RESULTS:\n${searchContext}` : ""}`
       stream: true,
     })
 
-    // Create streaming response
     const encoder = new TextEncoder()
     const readableStream = new ReadableStream({
       async start(controller) {
@@ -108,11 +151,9 @@ ${searchContext ? `\nSEARCH RESULTS:\n${searchContext}` : ""}`
           }
         }
 
-        // Check if it was a question
         const isNotQuestion = fullText.trim() === "NOT_A_QUESTION" || fullText.trim() === "PERSONAL_QUESTION"
 
         if (isNotQuestion) {
-          // Send empty signal
           controller.enqueue(encoder.encode(`data: ${JSON.stringify({ notQuestion: true })}\n\n`))
         }
 

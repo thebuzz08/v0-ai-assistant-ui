@@ -47,10 +47,11 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
   const animationFrameRef = useRef<number | null>(null)
   const recognitionRef = useRef<SpeechRecognition | null>(null)
   const currentParagraphRef = useRef("")
-  const silenceTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const isListeningRef = useRef(false)
   const bestVoiceRef = useRef<SpeechSynthesisVoice | null>(null)
   const isProcessingRef = useRef(false)
+  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
+  const lastProcessedTextRef = useRef("")
 
   // Find best voice on mount
   useEffect(() => {
@@ -92,14 +93,20 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
     window.speechSynthesis.speak(utterance)
   }, [])
 
-  const checkForQuestionAndAnswer = useCallback(
-    async (paragraph: string) => {
-      if (!paragraph.trim() || isProcessingRef.current) return
+  const answerQuestion = useCallback(
+    async (question: string) => {
+      if (isProcessingRef.current) return
 
       isProcessingRef.current = true
       setIsProcessing(true)
 
-      const questionText = paragraph.trim()
+      // Mark this question as processed
+      lastProcessedTextRef.current = currentParagraphRef.current
+
+      // Add user entry
+      setTranscript((prev) => [...prev, { speaker: "user", text: question }])
+
+      // Clear current paragraph for new input
       currentParagraphRef.current = ""
       setCurrentParagraph("")
       setInterimTranscript("")
@@ -108,78 +115,61 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
         const response = await fetch("/api/check-question", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: questionText }),
+          body: JSON.stringify({ text: question }),
         })
 
-        if (!response.ok) {
-          throw new Error("API error")
-        }
+        if (!response.ok) throw new Error("API error")
 
-        // Check if streaming
-        const contentType = response.headers.get("content-type")
+        const reader = response.body?.getReader()
+        if (!reader) throw new Error("No reader")
 
-        if (contentType?.includes("text/event-stream")) {
-          // Streaming response
-          const reader = response.body?.getReader()
-          if (!reader) throw new Error("No reader")
+        const decoder = new TextDecoder()
+        let fullText = ""
+        let addedAssistantEntry = false
+        let isNotQuestion = false
 
-          // Add user entry first
-          setTranscript((prev) => [...prev, { speaker: "user", text: questionText }])
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
 
-          const decoder = new TextDecoder()
-          let fullText = ""
-          let addedAssistantEntry = false
+          const chunk = decoder.decode(value, { stream: true })
+          const lines = chunk.split("\n")
 
-          while (true) {
-            const { done, value } = await reader.read()
-            if (done) break
+          for (const line of lines) {
+            if (line.startsWith("data: ")) {
+              const data = line.slice(6)
+              if (data === "[DONE]") continue
 
-            const chunk = decoder.decode(value, { stream: true })
-            const lines = chunk.split("\n")
+              try {
+                const parsed = JSON.parse(data)
+                if (parsed.notQuestion) {
+                  isNotQuestion = true
+                  continue
+                }
+                if (parsed.token) {
+                  fullText += parsed.token
 
-            for (const line of lines) {
-              if (line.startsWith("data: ")) {
-                const data = line.slice(6)
-                if (data === "[DONE]") continue
-
-                try {
-                  const parsed = JSON.parse(data)
-                  if (parsed.token) {
-                    fullText += parsed.token
-
-                    // Add or update assistant entry
-                    if (!addedAssistantEntry) {
-                      setTranscript((prev) => [...prev, { speaker: "assistant", text: fullText }])
-                      addedAssistantEntry = true
-                    } else {
-                      setTranscript((prev) => {
-                        const newTranscript = [...prev]
-                        newTranscript[newTranscript.length - 1] = { speaker: "assistant", text: fullText }
-                        return newTranscript
-                      })
-                    }
+                  if (!addedAssistantEntry) {
+                    setTranscript((prev) => [...prev, { speaker: "assistant", text: fullText }])
+                    addedAssistantEntry = true
+                  } else {
+                    setTranscript((prev) => {
+                      const newTranscript = [...prev]
+                      newTranscript[newTranscript.length - 1] = { speaker: "assistant", text: fullText }
+                      return newTranscript
+                    })
                   }
-                } catch {}
-              }
+                }
+              } catch {}
             }
           }
+        }
 
-          // Speak the full response
-          if (fullText) {
-            speakText(fullText)
-          }
-        } else {
-          // Non-streaming response
-          const data = await response.json()
-
-          if (data.isQuestion && data.answer) {
-            setTranscript((prev) => [
-              ...prev,
-              { speaker: "user", text: questionText },
-              { speaker: "assistant", text: data.answer },
-            ])
-            speakText(data.answer)
-          }
+        // If not a question, remove the user entry we added
+        if (isNotQuestion) {
+          setTranscript((prev) => prev.slice(0, -1))
+        } else if (fullText) {
+          speakText(fullText)
         }
       } catch (error) {
         console.error("[v0] Error:", error)
@@ -191,18 +181,25 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
     [speakText],
   )
 
-  const resetSilenceTimeout = useCallback(() => {
-    if (silenceTimeoutRef.current) {
-      clearTimeout(silenceTimeoutRef.current)
-    }
+  const checkForCompleteQuestion = useCallback(async () => {
+    const text = currentParagraphRef.current.trim()
 
-    silenceTimeoutRef.current = setTimeout(() => {
-      const text = currentParagraphRef.current.trim()
-      if (text && text.length > 2 && !isProcessingRef.current) {
-        checkForQuestionAndAnswer(text)
+    // Skip if empty, too short, already processing, or already processed this text
+    if (!text || text.length < 3 || isProcessingRef.current) return
+    if (text === lastProcessedTextRef.current) return
+
+    try {
+      const response = await fetch(`/api/check-question?text=${encodeURIComponent(text)}`)
+      const data = await response.json()
+
+      if (data.isComplete && data.question) {
+        // Found a complete question - answer it immediately
+        answerQuestion(data.question)
       }
-    }, 700) // 700ms of silence triggers check
-  }, [checkForQuestionAndAnswer])
+    } catch (error) {
+      console.error("[v0] Polling error:", error)
+    }
+  }, [answerQuestion])
 
   const startListening = useCallback(async () => {
     try {
@@ -265,10 +262,8 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
             : finalText.trim()
           setCurrentParagraph(currentParagraphRef.current)
           setInterimTranscript("")
-          resetSilenceTimeout()
         } else if (interimText) {
           setInterimTranscript(interimText)
-          resetSilenceTimeout()
         }
       }
 
@@ -287,18 +282,20 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
 
       recognition.start()
       recognitionRef.current = recognition
+
+      pollIntervalRef.current = setInterval(checkForCompleteQuestion, 500)
     } catch (error) {
       console.error("[v0] Failed to start listening:", error)
       setHasPermission(false)
     }
-  }, [resetSilenceTimeout])
+  }, [checkForCompleteQuestion])
 
   const stopListening = useCallback(() => {
     isListeningRef.current = false
 
-    if (silenceTimeoutRef.current) {
-      clearTimeout(silenceTimeoutRef.current)
-      silenceTimeoutRef.current = null
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current)
+      pollIntervalRef.current = null
     }
 
     if (recognitionRef.current) {
@@ -309,6 +306,7 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
     setInterimTranscript("")
     setCurrentParagraph("")
     currentParagraphRef.current = ""
+    lastProcessedTextRef.current = ""
 
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.cancel()
@@ -332,8 +330,8 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     return () => {
       if (recognitionRef.current) recognitionRef.current.stop()
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current)
       if (typeof window !== "undefined" && "speechSynthesis" in window) window.speechSynthesis.cancel()
-      if (silenceTimeoutRef.current) clearTimeout(silenceTimeoutRef.current)
     }
   }, [])
 
