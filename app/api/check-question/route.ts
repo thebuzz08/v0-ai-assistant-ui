@@ -59,6 +59,64 @@ async function searchTavily(query: string): Promise<string> {
   }
 }
 
+function detectQuestion(text: string): { isComplete: boolean; question: string | null } {
+  const lowerText = text.toLowerCase().trim()
+
+  // Skip greetings and personal questions
+  const skipPatterns = [
+    /^(hi|hello|hey|thanks|thank you|bye|goodbye)/,
+    /how are you/,
+    /how('s| is) it going/,
+    /what('s| is) up/,
+    /how was your/,
+    /what should i/,
+  ]
+
+  for (const pattern of skipPatterns) {
+    if (pattern.test(lowerText)) {
+      return { isComplete: false, question: null }
+    }
+  }
+
+  // Question patterns to extract
+  const questionPatterns = [
+    // Math questions
+    /what(?:'s| is) (\d+\s*[+\-*/x×]\s*\d+)/i,
+    /how much is (\d+\s*[+\-*/x×]\s*\d+)/i,
+    // What/who/when/where/why/how questions
+    /(what(?:'s| is| are| was| were| did| does| do| has| have| can| could| would| will) [^?]+)/i,
+    /(who(?:'s| is| are| was| were| did| does| do| has| have) [^?]+)/i,
+    /(when(?:'s| is| are| was| were| did| does| do) [^?]+)/i,
+    /(where(?:'s| is| are| was| were| did| does| do) [^?]+)/i,
+    /(why(?:'s| is| are| was| were| did| does| do) [^?]+)/i,
+    /(how(?:'s| is| are| was| were| did| does| do|many|much|long|far|often) [^?]+)/i,
+    // Can/could/would questions
+    /(can you [^?]+)/i,
+    /(could you [^?]+)/i,
+  ]
+
+  for (const pattern of questionPatterns) {
+    const match = text.match(pattern)
+    if (match) {
+      let question = match[1] || match[0]
+      question = question.trim()
+
+      // Check if question seems complete (has subject + verb or is math)
+      if (/\d+\s*[+\-*/x×]\s*\d+/.test(question)) {
+        return { isComplete: true, question: `what is ${question}` }
+      }
+
+      // Needs at least 3 words to be complete
+      const words = question.split(/\s+/)
+      if (words.length >= 3) {
+        return { isComplete: true, question }
+      }
+    }
+  }
+
+  return { isComplete: false, question: null }
+}
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url)
   const text = searchParams.get("text")
@@ -67,66 +125,49 @@ export async function GET(request: Request) {
     return Response.json({ isComplete: false, question: null })
   }
 
-  try {
-    const response = await groq.chat.completions.create({
-      model: "llama-3.1-8b-instant",
-      messages: [
-        {
-          role: "system",
-          content: `Extract any COMPLETE, ANSWERABLE question from this transcript. People often embed questions in casual speech.
-
-Return JSON: {"isComplete": true/false, "question": "extracted question" or null}
-
-EXTRACT questions like:
-- "what is X" / "what are X" / "what was X"
-- "who is X" / "who are X"  
-- "when did X" / "when is X"
-- "where is X" / "where did X"
-- "how do X" / "how does X" / "how many X"
-- "why did X" / "why is X"
-- Math: "what is 3+3", "how much is 10 times 5"
-- Facts: "what's the capital of France", "who won the Super Bowl"
-- Current events: "what happened in the news", "what did [person] do"
-
-IGNORE (return isComplete: false):
-- Incomplete: "what is the" "who was" "how do you"
-- Personal: "how are you", "what should I do", "how was your day"
-- Greetings: "hello", "hi there", "thanks"
-
-Examples:
-"so I was at the park and by the way what is 3 plus 3 and then" -> {"isComplete": true, "question": "what is 3 plus 3"}
-"what happened in the news yesterday I was wondering" -> {"isComplete": true, "question": "what happened in the news yesterday"}
-"hey so who is Elon Musk anyway" -> {"isComplete": true, "question": "who is Elon Musk"}
-"what is the" -> {"isComplete": false, "question": null}
-"how are you doing today" -> {"isComplete": false, "question": null}
-"hello there" -> {"isComplete": false, "question": null}`,
-        },
-        { role: "user", content: text },
-      ],
-      temperature: 0,
-      max_tokens: 100,
-      response_format: { type: "json_object" },
-    })
-
-    const result = JSON.parse(response.choices[0]?.message?.content || '{"isComplete": false, "question": null}')
-    return Response.json(result)
-  } catch (error) {
-    console.error("[v0] Completeness check error:", error)
-    return Response.json({ isComplete: false, question: null })
-  }
+  const result = detectQuestion(text)
+  return Response.json(result)
 }
 
 export async function POST(request: Request) {
-  try {
-    const { text } = await request.json()
+  const encoder = new TextEncoder()
 
-    if (!text || text.trim().length < 2) {
+  const createErrorStream = (message: string) => {
+    return new Response(`data: ${JSON.stringify({ token: message })}\n\ndata: [DONE]\n\n`, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+        Connection: "keep-alive",
+      },
+    })
+  }
+
+  try {
+    // Validate Groq API key
+    if (!process.env.GROQ_API_KEY) {
+      console.error("[v0] GROQ_API_KEY is missing")
+      return createErrorStream("Configuration error.")
+    }
+
+    const body = await request.json().catch(() => null)
+    if (!body || !body.text || typeof body.text !== "string") {
+      console.error("[v0] Invalid request body:", body)
+      return createErrorStream("Invalid request.")
+    }
+
+    const { text } = body
+
+    if (text.trim().length < 2) {
       return Response.json({ isQuestion: false, answer: null })
     }
 
     let searchContext = ""
     if (needsWebSearch(text)) {
-      searchContext = await searchTavily(text)
+      try {
+        searchContext = await searchTavily(text)
+      } catch (e) {
+        console.error("[v0] Search error:", e)
+      }
     }
 
     const systemPrompt = `You are an ultra-fast voice assistant. Answer questions in 2-8 words max.
@@ -138,7 +179,9 @@ RULES:
 
 ${searchContext ? `\nSEARCH RESULTS:\n${searchContext}` : ""}`
 
-    const stream = await groq.chat.completions.create({
+    const groqClient = new Groq({ apiKey: process.env.GROQ_API_KEY })
+
+    const stream = await groqClient.chat.completions.create({
       model: "llama-3.3-70b-versatile",
       messages: [
         { role: "system", content: systemPrompt },
@@ -149,21 +192,23 @@ ${searchContext ? `\nSEARCH RESULTS:\n${searchContext}` : ""}`
       stream: true,
     })
 
-    const encoder = new TextEncoder()
     const readableStream = new ReadableStream({
       async start(controller) {
-        let fullText = ""
-
-        for await (const chunk of stream) {
-          const token = chunk.choices[0]?.delta?.content || ""
-          if (token) {
-            fullText += token
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token })}\n\n`))
+        try {
+          for await (const chunk of stream) {
+            const token = chunk.choices[0]?.delta?.content || ""
+            if (token) {
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token })}\n\n`))
+            }
           }
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"))
+          controller.close()
+        } catch (streamError) {
+          console.error("[v0] Stream error:", streamError)
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token: "Error." })}\n\n`))
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"))
+          controller.close()
         }
-
-        controller.enqueue(encoder.encode("data: [DONE]\n\n"))
-        controller.close()
       },
     })
 
@@ -175,7 +220,7 @@ ${searchContext ? `\nSEARCH RESULTS:\n${searchContext}` : ""}`
       },
     })
   } catch (error) {
-    console.error("[v0] API Error:", error)
-    return Response.json({ isQuestion: false, answer: null, error: String(error) }, { status: 500 })
+    console.error("[v0] POST API Error:", error instanceof Error ? error.stack : error)
+    return createErrorStream("Sorry, something went wrong.")
   }
 }
