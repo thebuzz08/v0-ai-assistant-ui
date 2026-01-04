@@ -760,113 +760,129 @@ Return JSON only:
 CURRENT: ${currentTimeStr}, ${currentDateStr}
 ${customInstructions ? `\nUSER'S CUSTOM INSTRUCTIONS (follow these):\n${customInstructions}\n` : ""}
 
-YOUR JOB: Answer questions and help the user. If they ask something, answer it.
+YOUR JOB: Answer questions briefly. If they ask something, answer it.
 
 CRITICAL: You MUST respond to ALL questions. ONLY say "SILENT" if the text is:
 - People talking to each other (not to you)
 - Complete gibberish/random sounds
 - Just "hi" or "hello" with nothing else
 
-If there's ANY question - even about current events, interesting facts, or things you need to search for - you MUST provide an answer. Never ignore a genuine question.
+If there's ANY question - even about current events or things you need to search for - you MUST provide an answer. Never ignore a genuine question.
 
 ${conversationHistory ? `RECENT CONVERSATION:\n${conversationHistory}\n` : ""}
 ${lastMentionedEvent ? `LAST DISCUSSED EVENT: "${lastMentionedEvent.title}" at ${lastMentionedEvent.time}` : ""}
 ${calendarEvents?.length > 0 ? `\nYOUR CALENDAR (ONLY these events exist - do NOT invent others):\n${calendarContext}\nIMPORTANT: Only mention events from THIS list. If no events match the query, say "nothing scheduled".` : ""}
 ${notesContext ? `\nYOUR NOTES ACCESS:\n${notesContext}` : ""}
 
-RESPONSE RULES:
-- For factual questions (market cap, population, who, what, when, where, math): Give ONLY the raw answer
-  - "4.4 trillion" NOT "The market cap is 4.4 trillion"
-  - "Paris" NOT "The capital of France is Paris"  
-  - "42" NOT "The answer is 42"
-  - "Tim Cook" NOT "The CEO is Tim Cook"
-- For calendar queries: ONLY report events from YOUR CALENDAR list above
-  - NEVER make up or invent events that aren't in the list
-  - Use format "[event name] at [time]" - NEVER include dates or day names
-  - "call with Clark at 8 PM" NOT "call with Clark on Saturday at 8:00 PM"
-  - If no events match: "nothing scheduled"
-- For current events/news questions: Use your search tools to find recent information, then give a brief factual answer
-- For explanations: 1-2 sentences max
-- NEVER start with "The answer is", "It is", "The [thing] is", "You have", etc.
+RESPONSE RULES - KEEP ALL ANSWERS UNDER 1-2 SENTENCES:
+- Factual answers (math, facts, who/what/when/where): Give ONLY the answer, no preamble
+  - "4.4 trillion" NOT "The market cap is..."
+  - "Paris" NOT "The capital is..."
+  - "42" NOT "The answer is..."
+- Calendar queries: Use format "[event name] at [time]". If no match: "nothing scheduled"
+- For current events/news: Give brief factual answer (1-2 sentences max)
+- For explanations: 1-2 sentences max, simple language
+- NEVER start with "The answer is", "It is", "The [thing] is", etc.
+- NEVER give multiple paragraphs - keep it short and direct
 
 User says: "${text}"
 
 Your response:`
 
     const modelConfig: any = {}
-    if (!isCalendarQuery) {
+    if (!needsCalendarCheck) {
       modelConfig.tools = [{ googleSearch: {} }]
     }
 
-    const response = await ai.models.generateContent({
-      model,
-      contents: systemPrompt,
-      config: modelConfig,
+    const encoder = new TextEncoder()
+    let streamText = ""
+
+    const stream = new ReadableStream({
+      async start(controller) {
+        try {
+          const response = await ai.models.generateContent({
+            model,
+            contents: systemPrompt,
+            config: modelConfig,
+          })
+
+          if (response.text) {
+            for (const char of response.text) {
+              streamText += char
+              controller.enqueue(encoder.encode(JSON.stringify({ chunk: char }) + "\n"))
+              await new Promise((resolve) => setTimeout(resolve, 20))
+            }
+          }
+
+          const result = response.text?.trim() || ""
+          const shouldStaySilent = result.toUpperCase().replace(/[^A-Z]/g, "") === "SILENT" || result.length === 0
+
+          if (!shouldStaySilent && isSimple) {
+            setCachedResponse(cacheKey, result)
+          }
+
+          let mentionedEvent = lastMentionedEvent
+          if (!shouldStaySilent && calendarEvents?.length > 0) {
+            const resultLower = result.toLowerCase()
+
+            for (const event of calendarEvents) {
+              if (!event.title) continue
+              const titleLower = event.title.toLowerCase()
+
+              if (
+                resultLower.includes(titleLower) ||
+                titleLower
+                  .split(/\s+/)
+                  .filter((w: string) => w.length > 2)
+                  .some((w: string) => resultLower.includes(w))
+              ) {
+                mentionedEvent = {
+                  title: event.title,
+                  date: event.date,
+                  time: event.time,
+                  id: event.id,
+                }
+                break
+              }
+            }
+
+            if (/next|upcoming|soonest/.test(text.toLowerCase())) {
+              const now = new Date()
+              let closest: any = null
+              let closestDiff = Number.POSITIVE_INFINITY
+
+              for (const event of calendarEvents) {
+                const eventTime = new Date(`${event.date}T${event.time || "00:00"}:00`)
+                const diff = eventTime.getTime() - now.getTime()
+                if (diff > 0 && diff < closestDiff) {
+                  closestDiff = diff
+                  closest = event
+                }
+              }
+
+              if (closest) {
+                mentionedEvent = {
+                  title: closest.title,
+                  date: closest.date,
+                  time: closest.time,
+                  id: closest.id,
+                }
+              }
+            }
+          }
+
+          controller.close()
+        } catch (error) {
+          controller.error(error)
+        }
+      },
     })
 
-    const result = response.text?.trim() || ""
-    const shouldStaySilent = result.toUpperCase().replace(/[^A-Z]/g, "") === "SILENT" || result.length === 0
-
-    if (!shouldStaySilent && isSimple) {
-      setCachedResponse(cacheKey, result)
-    }
-
-    let mentionedEvent = lastMentionedEvent
-    if (!shouldStaySilent && calendarEvents?.length > 0) {
-      const resultLower = result.toLowerCase()
-
-      for (const event of calendarEvents) {
-        if (!event.title) continue
-        const titleLower = event.title.toLowerCase()
-
-        if (
-          resultLower.includes(titleLower) ||
-          titleLower
-            .split(/\s+/)
-            .filter((w: string) => w.length > 2)
-            .some((w: string) => resultLower.includes(w))
-        ) {
-          mentionedEvent = {
-            title: event.title,
-            date: event.date,
-            time: event.time,
-            id: event.id,
-          }
-          break
-        }
-      }
-
-      if (/next|upcoming|soonest/.test(text.toLowerCase())) {
-        const now = new Date()
-        let closest: any = null
-        let closestDiff = Number.POSITIVE_INFINITY
-
-        for (const event of calendarEvents) {
-          const eventTime = new Date(`${event.date}T${event.time || "00:00"}:00`)
-          const diff = eventTime.getTime() - now.getTime()
-          if (diff > 0 && diff < closestDiff) {
-            closestDiff = diff
-            closest = event
-          }
-        }
-
-        if (closest) {
-          mentionedEvent = {
-            title: closest.title,
-            date: closest.date,
-            time: closest.time,
-            id: closest.id,
-          }
-        }
-      }
-    }
-
-    return Response.json({
-      isQuestion: true,
-      answer: shouldStaySilent ? null : result,
-      lastMentionedEvent: mentionedEvent,
-      lastCreatedEvents,
-      model,
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache",
+      },
     })
   } catch (error) {
     console.error("[v0] API Error:", error)
