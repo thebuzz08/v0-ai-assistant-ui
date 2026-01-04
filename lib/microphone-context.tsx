@@ -213,22 +213,10 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
 
       setIsProcessing(true)
       try {
-        const accessToken = document.cookie
-          .split("; ")
-          .find((row) => row.startsWith("google_access_token="))
-          ?.split("=")[1]
-
         const response = await fetch("/api/check-question", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            text: paragraph,
-            calendarEvents: calendarContextRef.current,
-            accessToken,
-            notesContext: notesContextRef.current,
-            customInstructions: customInstructionsRef.current,
-            conversationHistory: transcript,
-          }),
+          body: JSON.stringify({ text: paragraph }),
         })
 
         const data = await response.json()
@@ -239,18 +227,11 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
 
           setTranscript((prev) => [...prev, { speaker: "user", text: paragraph }])
 
+          // Stream AI response
           const answerStream = await fetch("/api/check-question", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              text: paragraph,
-              stream: true,
-              calendarEvents: calendarContextRef.current,
-              accessToken,
-              notesContext: notesContextRef.current,
-              customInstructions: customInstructionsRef.current,
-              conversationHistory: transcript,
-            }),
+            body: JSON.stringify({ text: paragraph, stream: true }),
           })
 
           if (answerStream.ok) {
@@ -272,7 +253,7 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
         setIsProcessing(false)
       }
     },
-    [aiEnabled, speakText, transcript],
+    [aiEnabled, speakText],
   )
 
   useEffect(() => {
