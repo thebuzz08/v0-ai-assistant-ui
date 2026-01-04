@@ -1,14 +1,6 @@
 "use client"
 
 import { createContext, useContext, useState, useCallback, useRef, useEffect, type ReactNode } from "react"
-import type { SpeechRecognition, SpeechRecognitionEvent, SpeechRecognitionErrorEvent } from "web-speech-api"
-
-declare global {
-  interface Window {
-    SpeechRecognition: new () => SpeechRecognition
-    webkitSpeechRecognition: new () => SpeechRecognition
-  }
-}
 
 export interface TranscriptEntry {
   speaker: "user" | "assistant"
@@ -45,14 +37,17 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
   const audioContextRef = useRef<AudioContext | null>(null)
   const analyserRef = useRef<AnalyserNode | null>(null)
   const animationFrameRef = useRef<number | null>(null)
-  const recognitionRef = useRef<SpeechRecognition | null>(null)
   const currentParagraphRef = useRef("")
   const isListeningRef = useRef(false)
   const bestVoiceRef = useRef<SpeechSynthesisVoice | null>(null)
   const isProcessingRef = useRef(false)
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
-  const lastProcessedTextRef = useRef("")
   const answeredQuestionsRef = useRef<Set<string>>(new Set())
+
+  // Deepgram refs
+  const websocketRef = useRef<WebSocket | null>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const processorRef = useRef<ScriptProcessorNode | null>(null)
 
   useEffect(() => {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) return
@@ -107,6 +102,7 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
       isProcessingRef.current = true
       setIsProcessing(true)
 
+      // Clear the current paragraph to prevent re-detection
       currentParagraphRef.current = ""
       setCurrentParagraph("")
       setInterimTranscript("")
@@ -200,12 +196,19 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
 
   const startListening = useCallback(async () => {
     try {
+      // Get microphone stream
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          sampleRate: 16000,
+        },
       })
       mediaStreamRef.current = stream
 
-      const audioContext = new AudioContext()
+      // Set up audio level monitoring
+      const audioContext = new AudioContext({ sampleRate: 16000 })
       audioContextRef.current = audioContext
 
       const analyser = audioContext.createAnalyser()
@@ -229,62 +232,73 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
       setIsListening(true)
       setHasPermission(true)
 
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
-      if (!SpeechRecognition) {
-        console.error("[v0] Web Speech API not supported")
-        return
+      // Get Deepgram token and connect
+      const tokenResponse = await fetch("/api/deepgram-token")
+      const { apiKey, wsUrl } = await tokenResponse.json()
+
+      const ws = new WebSocket(wsUrl, ["token", apiKey])
+      websocketRef.current = ws
+
+      ws.onopen = () => {
+        console.log("[v0] Deepgram connected")
+
+        // Create a ScriptProcessorNode to get raw PCM data
+        const processor = audioContext.createScriptProcessor(4096, 1, 1)
+        processorRef.current = processor
+
+        source.connect(processor)
+        processor.connect(audioContext.destination)
+
+        processor.onaudioprocess = (e) => {
+          if (ws.readyState === WebSocket.OPEN) {
+            const inputData = e.inputBuffer.getChannelData(0)
+            // Convert float32 to int16
+            const pcmData = new Int16Array(inputData.length)
+            for (let i = 0; i < inputData.length; i++) {
+              pcmData[i] = Math.max(-32768, Math.min(32767, inputData[i] * 32768))
+            }
+            ws.send(pcmData.buffer)
+          }
+        }
       }
 
-      const recognition = new SpeechRecognition()
-      recognition.continuous = true
-      recognition.interimResults = true
-      recognition.lang = "en-US"
-      recognition.maxAlternatives = 3 // Add maxAlternatives for better accuracy
+      ws.onmessage = (event) => {
+        const data = JSON.parse(event.data)
 
-      recognition.onresult = (event: SpeechRecognitionEvent) => {
-        let finalText = ""
-        let interimText = ""
+        if (data.type === "Results") {
+          const transcript = data.channel?.alternatives?.[0]?.transcript || ""
 
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const result = event.results[i]
-          if (result.isFinal) {
-            const bestAlternative = result[0]
-            // Only accept if confidence is decent (or if confidence not provided, accept anyway)
-            if (bestAlternative.confidence === 0 || bestAlternative.confidence > 0.5) {
-              finalText += bestAlternative.transcript
+          if (transcript) {
+            if (data.is_final) {
+              // Final result - add to paragraph
+              currentParagraphRef.current = currentParagraphRef.current
+                ? currentParagraphRef.current + " " + transcript.trim()
+                : transcript.trim()
+              setCurrentParagraph(currentParagraphRef.current)
+              setInterimTranscript("")
+            } else {
+              // Interim result
+              setInterimTranscript(transcript)
             }
-          } else {
-            interimText += result[0].transcript
           }
         }
 
-        if (finalText) {
-          currentParagraphRef.current = currentParagraphRef.current
-            ? currentParagraphRef.current + " " + finalText.trim()
-            : finalText.trim()
-          setCurrentParagraph(currentParagraphRef.current)
-          setInterimTranscript("")
-        } else if (interimText) {
-          setInterimTranscript(interimText)
+        // Deepgram's utterance_end event signals end of speech
+        if (data.type === "UtteranceEnd") {
+          // Check for question when user stops speaking
+          checkForCompleteQuestion()
         }
       }
 
-      recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-        console.error("[v0] Speech recognition error:", event.error)
-        if (event.error === "not-allowed") setHasPermission(false)
+      ws.onerror = (error) => {
+        console.error("[v0] Deepgram error:", error)
       }
 
-      recognition.onend = () => {
-        if (isListeningRef.current) {
-          try {
-            recognition.start()
-          } catch {}
-        }
+      ws.onclose = () => {
+        console.log("[v0] Deepgram disconnected")
       }
 
-      recognition.start()
-      recognitionRef.current = recognition
-
+      // Also poll periodically for questions mid-speech
       pollIntervalRef.current = setInterval(checkForCompleteQuestion, 500)
     } catch (error) {
       console.error("[v0] Failed to start listening:", error)
@@ -300,9 +314,16 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
       pollIntervalRef.current = null
     }
 
-    if (recognitionRef.current) {
-      recognitionRef.current.stop()
-      recognitionRef.current = null
+    // Close Deepgram WebSocket
+    if (websocketRef.current) {
+      websocketRef.current.close()
+      websocketRef.current = null
+    }
+
+    // Stop processor
+    if (processorRef.current) {
+      processorRef.current.disconnect()
+      processorRef.current = null
     }
 
     setInterimTranscript("")
@@ -331,7 +352,8 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     return () => {
-      if (recognitionRef.current) recognitionRef.current.stop()
+      if (websocketRef.current) websocketRef.current.close()
+      if (processorRef.current) processorRef.current.disconnect()
       if (pollIntervalRef.current) clearInterval(pollIntervalRef.current)
       if (typeof window !== "undefined" && "speechSynthesis" in window) window.speechSynthesis.cancel()
     }
