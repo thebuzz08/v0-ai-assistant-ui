@@ -180,9 +180,9 @@ If unsure whether the user is talking TO you, err on the side of silence.`
 
       const tokenResponse = await fetch("/api/realtime/token")
       if (!tokenResponse.ok) {
-        const errorText = await tokenResponse.text()
-        console.error("[v0] Token error:", errorText)
-        throw new Error("Failed to get realtime token")
+        const errorData = await tokenResponse.json()
+        console.error("[v0] Token error:", errorData)
+        throw new Error(`Failed to get realtime token: ${errorData.details || errorData.error}`)
       }
       const tokenData = await tokenResponse.json()
       const clientSecret = tokenData.client_secret?.value
