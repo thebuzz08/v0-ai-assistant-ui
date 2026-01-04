@@ -129,47 +129,17 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
       if (!paragraph.trim()) return
 
       setIsProcessing(true)
-      streamingTextRef.current = ""
 
       try {
         const response = await fetch("/api/check-question", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: paragraph, stream: true }),
+          body: JSON.stringify({ text: paragraph }),
         })
 
-        if (!response.body) {
-          setIsProcessing(false)
-          return
-        }
+        const data = await response.json()
 
-        const reader = response.body.getReader()
-        const decoder = new TextDecoder()
-        let fullAnswer = ""
-        let isQuestion = false
-
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-
-          const text = decoder.decode(value)
-          const lines = text.split("\n").filter((line) => line.startsWith("data: "))
-
-          for (const line of lines) {
-            try {
-              const data = JSON.parse(line.slice(6))
-
-              if (data.done) {
-                isQuestion = data.isQuestion
-                fullAnswer = data.answer || ""
-              } else if (data.chunk) {
-                streamingTextRef.current += data.chunk
-              }
-            } catch {}
-          }
-        }
-
-        if (isQuestion && fullAnswer) {
+        if (data.isQuestion && data.answer) {
           // Clear current paragraph immediately so next speech doesn't include old text
           currentParagraphRef.current = ""
           setCurrentParagraph("")
@@ -177,9 +147,9 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
           setTranscript((prev) => [
             ...prev,
             { speaker: "user", text: paragraph },
-            { speaker: "assistant", text: fullAnswer },
+            { speaker: "assistant", text: data.answer },
           ])
-          speakText(fullAnswer)
+          speakText(data.answer)
         } else {
           currentParagraphRef.current = ""
           setCurrentParagraph("")
@@ -190,7 +160,6 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
         setCurrentParagraph("")
       } finally {
         setIsProcessing(false)
-        streamingTextRef.current = ""
       }
     },
     [speakText],
