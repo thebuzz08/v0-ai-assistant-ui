@@ -4,7 +4,7 @@ import { useState, useEffect } from "react"
 import { EarbudsAnimation } from "@/components/earbuds-animation"
 import { Mic, Volume2, FileText, ArrowRight, Sparkles, Check, X, Loader2, Calendar } from "lucide-react"
 import { useRouter } from "next/navigation"
-import { useMicrophone } from "@/lib/microphone-context"
+import { useRealtimeVoice } from "@/lib/realtime-voice-context"
 import { useCalendar } from "@/lib/calendar-context"
 import { useAuth } from "@/lib/auth-context"
 
@@ -26,7 +26,7 @@ export default function OnboardingPage() {
   const [calendarConnecting, setCalendarConnecting] = useState(false)
   const [mounted, setMounted] = useState(false)
 
-  const { requestPermission } = useMicrophone()
+  const { requestMicrophonePermission } = useRealtimeVoice()
   const { isConnected: calendarConnected, connectGoogle, checkConnectionStatus } = useCalendar()
 
   useEffect(() => {
@@ -84,7 +84,7 @@ export default function OnboardingPage() {
 
   const handleRequestMicrophone = async () => {
     setPermissionStatus((prev) => ({ ...prev, microphone: "requesting" }))
-    const granted = await requestPermission()
+    const granted = await requestMicrophonePermission()
     setPermissionStatus((prev) => ({
       ...prev,
       microphone: granted ? "granted" : "denied",

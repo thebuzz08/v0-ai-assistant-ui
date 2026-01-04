@@ -19,6 +19,7 @@ interface RealtimeVoiceContextType {
   isSpeaking: boolean
   customInstructions: string
   setCustomInstructions: (instructions: string) => void
+  requestMicrophonePermission: () => Promise<boolean>
 }
 
 const RealtimeVoiceContext = createContext<RealtimeVoiceContextType | null>(null)
@@ -49,6 +50,18 @@ export function RealtimeVoiceProvider({ children }: { children: ReactNode }) {
         setCustomInstructionsState(saved)
         customInstructionsRef.current = saved
       }
+    }
+  }, [])
+
+  const requestMicrophonePermission = useCallback(async (): Promise<boolean> => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      // Stop the stream immediately - we just wanted to check permissions
+      stream.getTracks().forEach((track) => track.stop())
+      return true
+    } catch (error) {
+      console.error("[v0] Microphone permission denied:", error)
+      return false
     }
   }, [])
 
@@ -116,25 +129,21 @@ If unsure whether the user is talking TO you, err on the side of silence.`
         audioPlayerContextRef.current = new AudioContext({ sampleRate: 24000 })
       }
 
-      // Decode base64 to PCM16
       const binaryString = atob(base64Audio)
       const bytes = new Uint8Array(binaryString.length)
       for (let i = 0; i < binaryString.length; i++) {
         bytes[i] = binaryString.charCodeAt(i)
       }
 
-      // Convert PCM16 to Float32 for Web Audio API
       const pcm16 = new Int16Array(bytes.buffer)
       const float32 = new Float32Array(pcm16.length)
       for (let i = 0; i < pcm16.length; i++) {
         float32[i] = pcm16[i] / 32768.0
       }
 
-      // Create audio buffer
       const audioBuffer = audioPlayerContextRef.current.createBuffer(1, float32.length, 24000)
       audioBuffer.getChannelData(0).set(float32)
 
-      // Play audio
       const source = audioPlayerContextRef.current.createBufferSource()
       source.buffer = audioBuffer
       source.connect(audioPlayerContextRef.current.destination)
@@ -229,7 +238,6 @@ If unsure whether the user is talking TO you, err on the side of silence.`
         const source = audioContext.createMediaStreamSource(stream)
         source.connect(analyser)
 
-        // Audio level monitoring
         const dataArray = new Uint8Array(analyser.frequencyBinCount)
         const updateLevel = () => {
           if (!analyserRef.current) return
@@ -411,6 +419,7 @@ If unsure whether the user is talking TO you, err on the side of silence.`
         isSpeaking,
         customInstructions,
         setCustomInstructions,
+        requestMicrophonePermission,
       }}
     >
       {children}
