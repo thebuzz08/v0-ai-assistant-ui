@@ -238,15 +238,30 @@ If the user is NOT asking you something directly, respond with exactly: "SILENT"
 
       const { token } = await response.json()
 
-      const deepgramWs = new WebSocket("wss://api.deepgram.com/v1/listen", [
-        "token",
-        token || process.env.NEXT_PUBLIC_DEEPGRAM_API_KEY || "",
-      ])
+      const deepgramUrl = new URL("wss://api.deepgram.com/v1/listen")
+      deepgramUrl.searchParams.append("encoding", "linear16")
+      deepgramUrl.searchParams.append("sample_rate", "16000")
+      deepgramUrl.searchParams.append("channels", "1")
+      deepgramUrl.searchParams.append("model", "nova-2")
+      deepgramUrl.searchParams.append("smart_format", "true")
+      deepgramUrl.searchParams.append("interim_results", "true")
+      deepgramUrl.searchParams.append("vad_events", "true")
+      deepgramUrl.searchParams.append("endpointing", "300")
+
+      const deepgramWs = new WebSocket(deepgramUrl.toString(), ["token", token])
+
+      let keepAliveInterval: NodeJS.Timeout | null = null
 
       deepgramWs.onopen = () => {
         console.log("[v0] Deepgram WebSocket connected")
         setIsConnected(true)
         setIsListening(true)
+
+        keepAliveInterval = setInterval(() => {
+          if (deepgramWs.readyState === WebSocket.OPEN) {
+            deepgramWs.send(JSON.stringify({ type: "KeepAlive" }))
+          }
+        }, 5000)
 
         const processor = audioContext.createScriptProcessor(4096, 1, 1)
         processorRef.current = processor
@@ -305,10 +320,12 @@ If the user is NOT asking you something directly, respond with exactly: "SILENT"
 
       deepgramWs.onerror = (error) => {
         console.error("[v0] Deepgram WebSocket error:", error)
+        if (keepAliveInterval) clearInterval(keepAliveInterval)
       }
 
-      deepgramWs.onclose = () => {
-        console.log("[v0] Deepgram WebSocket closed")
+      deepgramWs.onclose = (event) => {
+        console.log("[v0] Deepgram WebSocket closed", event.code, event.reason)
+        if (keepAliveInterval) clearInterval(keepAliveInterval)
         setIsConnected(false)
         setIsListening(false)
       }
