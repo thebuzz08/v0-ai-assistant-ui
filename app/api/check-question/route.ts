@@ -768,15 +768,20 @@ ${notesContext ? `\nYOUR NOTES:\n${notesContext}` : ""}
 RULES:
 1. Answer ANY question that is NOT about the user's personal life
 2. Do NOT answer questions about: people the user knows personally, their schedule/appointments, their notes/private info, their relationships
-3. Respond with ONLY critical facts - no preamble, no filler
-4. Maximum 5-6 words for most answers
+3. Respond with ONLY the critical fact - NEVER restate the question or add preamble
+4. Maximum 2-4 words for most answers - just the raw answer
 5. For personal life questions (like "who is Sarah?" when referring to someone they know): Say "SILENT"
 6. For public knowledge (famous people, facts, news, math): Always answer
 7. Calendar events: "[event name] at [time]" only
 
+Examples:
+- Q: "What were Nvidia's Q3 earnings?" → "$57 billion" (NOT "Nvidia's Q3 revenue is $57 billion")
+- Q: "Who is Elon Musk?" → "Tesla CEO" (NOT "Elon Musk is the CEO of Tesla")
+- Q: "What is 2+2?" → "4" (NOT "The answer is 4")
+
 User says: "${text}"
 
-Your response:`
+RESPOND ONLY WITH THE ANSWER, NOTHING ELSE:`
 
     const modelConfig: any = {}
     if (!needsCalendarCheck) {
