@@ -52,8 +52,8 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
   const isProcessingRef = useRef(false)
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const lastProcessedTextRef = useRef("")
+  const answeredQuestionsRef = useRef<Set<string>>(new Set())
 
-  // Find best voice on mount
   useEffect(() => {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) return
 
@@ -97,17 +97,20 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
     async (question: string) => {
       if (isProcessingRef.current) return
 
+      const normalizedQuestion = question.toLowerCase().trim()
+      if (answeredQuestionsRef.current.has(normalizedQuestion)) {
+        return
+      }
+
+      answeredQuestionsRef.current.add(normalizedQuestion)
+
       isProcessingRef.current = true
       setIsProcessing(true)
-
-      // Mark this question as processed
-      lastProcessedTextRef.current = currentParagraphRef.current
 
       currentParagraphRef.current = ""
       setCurrentParagraph("")
       setInterimTranscript("")
 
-      // Add user entry
       setTranscript((prev) => [...prev, { speaker: "user", text: question }])
 
       try {
@@ -164,6 +167,7 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
         }
       } catch (error) {
         console.error("[v0] Error:", error)
+        answeredQuestionsRef.current.delete(normalizedQuestion)
       } finally {
         isProcessingRef.current = false
         setIsProcessing(false)
@@ -175,16 +179,18 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
   const checkForCompleteQuestion = useCallback(async () => {
     const text = currentParagraphRef.current.trim()
 
-    // Skip if empty, too short, already processing, or already processed this text
     if (!text || text.length < 3 || isProcessingRef.current) return
-    if (text === lastProcessedTextRef.current) return
 
     try {
       const response = await fetch(`/api/check-question?text=${encodeURIComponent(text)}`)
       const data = await response.json()
 
       if (data.isComplete && data.question) {
-        // Found a complete question - answer it immediately
+        const normalizedQuestion = data.question.toLowerCase().trim()
+        if (answeredQuestionsRef.current.has(normalizedQuestion)) {
+          return
+        }
+
         answerQuestion(data.question)
       }
     } catch (error) {
@@ -297,7 +303,7 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
     setInterimTranscript("")
     setCurrentParagraph("")
     currentParagraphRef.current = ""
-    lastProcessedTextRef.current = ""
+    answeredQuestionsRef.current.clear()
 
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.cancel()
