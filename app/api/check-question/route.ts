@@ -68,25 +68,38 @@ export async function GET(request: Request) {
   }
 
   try {
-    // Fast completeness check with smaller model
     const response = await groq.chat.completions.create({
       model: "llama-3.1-8b-instant",
       messages: [
         {
           role: "system",
-          content: `Analyze if this speech transcript contains a COMPLETE question that can be answered.
-Return JSON: {"isComplete": true/false, "question": "the complete question" or null}
-- isComplete=true if there's a question that's finished being asked
-- isComplete=false if the person is mid-sentence or hasn't finished their thought
-- Extract just the question part if there's extra text
+          content: `Extract any COMPLETE, ANSWERABLE question from this transcript. People often embed questions in casual speech.
+
+Return JSON: {"isComplete": true/false, "question": "extracted question" or null}
+
+EXTRACT questions like:
+- "what is X" / "what are X" / "what was X"
+- "who is X" / "who are X"  
+- "when did X" / "when is X"
+- "where is X" / "where did X"
+- "how do X" / "how does X" / "how many X"
+- "why did X" / "why is X"
+- Math: "what is 3+3", "how much is 10 times 5"
+- Facts: "what's the capital of France", "who won the Super Bowl"
+- Current events: "what happened in the news", "what did [person] do"
+
+IGNORE (return isComplete: false):
+- Incomplete: "what is the" "who was" "how do you"
+- Personal: "how are you", "what should I do", "how was your day"
+- Greetings: "hello", "hi there", "thanks"
 
 Examples:
-"what is three plus three" -> {"isComplete": true, "question": "what is three plus three"}
+"so I was at the park and by the way what is 3 plus 3 and then" -> {"isComplete": true, "question": "what is 3 plus 3"}
+"what happened in the news yesterday I was wondering" -> {"isComplete": true, "question": "what happened in the news yesterday"}
+"hey so who is Elon Musk anyway" -> {"isComplete": true, "question": "who is Elon Musk"}
 "what is the" -> {"isComplete": false, "question": null}
-"hey so I was wondering what" -> {"isComplete": false, "question": null}
-"what time is it in Tokyo" -> {"isComplete": true, "question": "what time is it in Tokyo"}
-"hello" -> {"isComplete": false, "question": null}
-"thanks for that so what is" -> {"isComplete": false, "question": null}`,
+"how are you doing today" -> {"isComplete": false, "question": null}
+"hello there" -> {"isComplete": false, "question": null}`,
         },
         { role: "user", content: text },
       ],
@@ -116,14 +129,12 @@ export async function POST(request: Request) {
       searchContext = await searchTavily(text)
     }
 
-    const systemPrompt = `You are an ultra-fast voice assistant. Answer ALL questions instantly in 2-8 words max.
+    const systemPrompt = `You are an ultra-fast voice assistant. Answer questions in 2-8 words max.
 
 RULES:
-1. Just give the raw answer, no preamble
+1. Give the raw answer only, no preamble
 2. If search results are provided, use them for accuracy
-3. ONLY respond "NOT_A_QUESTION" for statements/greetings like "hello" or "thanks"
-4. ONLY respond "PERSONAL_QUESTION" for questions about the user's personal life you can't know (their grades, their feelings, their friends)
-5. Answer ALL general knowledge, facts, math, science, news, current events, famous people, companies, etc.
+3. Answer ALL factual questions: math, science, history, current events, famous people, companies, etc.
 
 ${searchContext ? `\nSEARCH RESULTS:\n${searchContext}` : ""}`
 
@@ -149,12 +160,6 @@ ${searchContext ? `\nSEARCH RESULTS:\n${searchContext}` : ""}`
             fullText += token
             controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token })}\n\n`))
           }
-        }
-
-        const isNotQuestion = fullText.trim() === "NOT_A_QUESTION" || fullText.trim() === "PERSONAL_QUESTION"
-
-        if (isNotQuestion) {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ notQuestion: true })}\n\n`))
         }
 
         controller.enqueue(encoder.encode("data: [DONE]\n\n"))

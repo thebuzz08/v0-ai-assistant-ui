@@ -103,13 +103,12 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
       // Mark this question as processed
       lastProcessedTextRef.current = currentParagraphRef.current
 
-      // Add user entry
-      setTranscript((prev) => [...prev, { speaker: "user", text: question }])
-
-      // Clear current paragraph for new input
       currentParagraphRef.current = ""
       setCurrentParagraph("")
       setInterimTranscript("")
+
+      // Add user entry
+      setTranscript((prev) => [...prev, { speaker: "user", text: question }])
 
       try {
         const response = await fetch("/api/check-question", {
@@ -126,7 +125,6 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
         const decoder = new TextDecoder()
         let fullText = ""
         let addedAssistantEntry = false
-        let isNotQuestion = false
 
         while (true) {
           const { done, value } = await reader.read()
@@ -142,10 +140,6 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
 
               try {
                 const parsed = JSON.parse(data)
-                if (parsed.notQuestion) {
-                  isNotQuestion = true
-                  continue
-                }
                 if (parsed.token) {
                   fullText += parsed.token
 
@@ -165,10 +159,7 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
           }
         }
 
-        // If not a question, remove the user entry we added
-        if (isNotQuestion) {
-          setTranscript((prev) => prev.slice(0, -1))
-        } else if (fullText) {
+        if (fullText) {
           speakText(fullText)
         }
       } catch (error) {
