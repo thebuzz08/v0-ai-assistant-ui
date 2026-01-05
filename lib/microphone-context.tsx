@@ -128,7 +128,7 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const answerQuestion = useCallback(
-    async (question: string) => {
+    async (question: string, fullText: string) => {
       if (isProcessingRef.current) return
 
       const normalizedQuestion = question.toLowerCase().trim()
@@ -141,11 +141,12 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
       isProcessingRef.current = true
       setIsProcessing(true)
 
+      setTranscript((prev) => [...prev, { speaker: "user", text: fullText }])
+
       currentParagraphRef.current = ""
       setCurrentParagraph("")
       setInterimTranscript("")
-
-      setTranscript((prev) => [...prev, { speaker: "user", text: question }])
+      lastProcessedTextRef.current = ""
 
       try {
         const response = await fetch("/api/check-question", {
@@ -160,7 +161,7 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
         if (!reader) throw new Error("No reader")
 
         const decoder = new TextDecoder()
-        let fullText = ""
+        let fullTextResponse = ""
         let addedAssistantEntry = false
         let wordBuffer: string[] = []
         let firstChunkSpoken = false
@@ -180,15 +181,15 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
               try {
                 const parsed = JSON.parse(data)
                 if (parsed.token) {
-                  fullText += parsed.token
+                  fullTextResponse += parsed.token
 
                   if (!addedAssistantEntry) {
-                    setTranscript((prev) => [...prev, { speaker: "assistant", text: fullText }])
+                    setTranscript((prev) => [...prev, { speaker: "assistant", text: fullTextResponse }])
                     addedAssistantEntry = true
                   } else {
                     setTranscript((prev) => {
                       const newTranscript = [...prev]
-                      newTranscript[newTranscript.length - 1] = { speaker: "assistant", text: fullText }
+                      newTranscript[newTranscript.length - 1] = { speaker: "assistant", text: fullTextResponse }
                       return newTranscript
                     })
                   }
@@ -245,7 +246,7 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
           if (answeredQuestionsRef.current.has(normalizedQuestion)) {
             return
           }
-          answerQuestion(data.question)
+          answerQuestion(data.question, text)
         }
       } catch (error) {
         console.error("[v0] Check error:", error)
