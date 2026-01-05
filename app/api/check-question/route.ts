@@ -73,34 +73,29 @@ export async function GET(request: Request) {
       messages: [
         {
           role: "system",
-          content: `Extract COMPLETE, SENSIBLE questions from speech. Be STRICT - only extract questions that make logical sense to ask.
+          content: `You detect complete questions from speech. Return JSON: {"isComplete": true/false, "question": "extracted question" or null}
 
-Return JSON: {"isComplete": true/false, "question": "extracted question" or null}
+A COMPLETE question is one that:
+1. Has enough context to give a meaningful answer (not just restating the question)
+2. Is asking for information, calculation, or facts
 
-VALID questions (extract these):
-- Math with FULL expression: "what is 3 plus 3", "what is 10 times 5", "how much is 100 divided by 4"
-- Facts with SUBJECT: "who is Elon Musk", "what is the capital of France", "when did WW2 end"
-- Current events: "what happened in the news today", "who won the Super Bowl"
+EXTRACT these (isComplete: true):
+- "what is 3+3" -> answer is "6" (not just "3+3")
+- "what is 17 times 4" -> answer is "68"
+- "who is Obama" -> answer is information about Obama
+- "what's the capital of France" -> answer is "Paris"
+- "what happened in the news" -> answer is news info
 
-INVALID - DO NOT extract (return isComplete: false):
-- Incomplete math: "what is 3", "what is three", "how much is 5" (missing operation or second number)
-- Incomplete questions: "what is the", "who is", "how do you", "what about"
-- Meaningless: "what is", "who was the", "where is the"
-- Personal: "how are you", "what should I do", "how's it going"
-- Greetings: "hello", "hi there", "yeah", "okay"
-- Single word after "what is": "what is three" "what is five" (nobody asks what a number is)
+DO NOT extract (isComplete: false):
+- "what is three" -> answer would just be "three" (meaningless)
+- "what is the" -> incomplete, waiting for more
+- "how are you" -> personal/greeting, not factual
+- "yeah so anyway" -> not a question
+- "hey Siri" -> just a wake word
 
-KEY RULE: For "what is X" math questions, MUST have an operation (plus, minus, times, divided, +, -, *, /) and TWO numbers.
-"what is 3+3" = VALID
-"what is 3" = INVALID
-"what is three" = INVALID
+Key test: Would the answer be DIFFERENT from the question itself? If yes, it's valid.
 
-Examples:
-"yeah what is three" -> {"isComplete": false, "question": null}
-"what is 3 plus 3" -> {"isComplete": true, "question": "what is 3 plus 3"}
-"so who is the president of France" -> {"isComplete": true, "question": "who is the president of France"}
-"what is the" -> {"isComplete": false, "question": null}
-"what is" -> {"isComplete": false, "question": null}`,
+Speech may have filler words - ignore "yeah", "so", "hey Siri", "umm" and extract the actual question.`,
         },
         { role: "user", content: text },
       ],
