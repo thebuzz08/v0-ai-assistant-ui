@@ -233,7 +233,7 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
       if (!text || text.length < 3 || isProcessingRef.current) return
 
       const wordCount = text.trim().split(/\s+/).length
-      if (wordCount < 3) return
+      if (wordCount < 2) return // reduced from 3 to 2 words minimum
 
       if (text === lastProcessedTextRef.current) return
       lastProcessedTextRef.current = text
@@ -340,11 +340,22 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
               clearTimeout(interimCheckTimerRef.current)
             }
 
-            interimCheckTimerRef.current = setTimeout(() => {
-              if (fullInterimText.trim().split(/\s+/).length >= 3) {
-                checkText(fullInterimText, false)
-              }
-            }, 300)
+            const looksComplete =
+              /[?]/.test(fullInterimText) ||
+              /\b(what|who|where|when|why|how|is|are|can|could|would|will|does|did)\b.*\b(is|are|was|were|plus|minus|times|divided|\+|-|\*|\/|×|÷)\b/i.test(
+                fullInterimText,
+              )
+
+            if (looksComplete && fullInterimText.trim().split(/\s+/).length >= 2) {
+              // Check immediately for likely complete questions
+              checkText(fullInterimText, false)
+            } else {
+              interimCheckTimerRef.current = setTimeout(() => {
+                if (fullInterimText.trim().split(/\s+/).length >= 2) {
+                  checkText(fullInterimText, false)
+                }
+              }, 200)
+            }
           }
         }
       }
