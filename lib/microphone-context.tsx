@@ -53,6 +53,8 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
   const lastProcessedTextRef = useRef("")
   const answeredQuestionsRef = useRef<Set<string>>(new Set())
   const ttsUnlockedRef = useRef(false)
+  const interimCheckTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const lastInterimTextRef = useRef("")
 
   useEffect(() => {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) return
@@ -315,6 +317,11 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
         }
 
         if (finalText) {
+          if (interimCheckTimerRef.current) {
+            clearTimeout(interimCheckTimerRef.current)
+            interimCheckTimerRef.current = null
+          }
+
           currentParagraphRef.current = currentParagraphRef.current
             ? currentParagraphRef.current + " " + finalText.trim()
             : finalText.trim()
@@ -323,6 +330,24 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
           checkText(currentParagraphRef.current, true)
         } else if (interimText) {
           setInterimTranscript(interimText)
+
+          const fullInterim = currentParagraphRef.current
+            ? currentParagraphRef.current + " " + interimText.trim()
+            : interimText.trim()
+
+          if (fullInterim !== lastInterimTextRef.current) {
+            lastInterimTextRef.current = fullInterim
+
+            if (interimCheckTimerRef.current) {
+              clearTimeout(interimCheckTimerRef.current)
+            }
+
+            interimCheckTimerRef.current = setTimeout(() => {
+              if (!isProcessingRef.current && fullInterim.trim().split(/\s+/).length >= 3) {
+                checkText(fullInterim, true)
+              }
+            }, 400)
+          }
         }
       }
 
@@ -349,6 +374,11 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
 
   const stopListening = useCallback(() => {
     isListeningRef.current = false
+
+    if (interimCheckTimerRef.current) {
+      clearTimeout(interimCheckTimerRef.current)
+      interimCheckTimerRef.current = null
+    }
 
     if (recognitionRef.current) {
       recognitionRef.current.stop()
