@@ -165,8 +165,8 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
         const decoder = new TextDecoder()
         let fullTextResponse = ""
         let addedAssistantEntry = false
-        let wordBuffer: string[] = []
-        let firstChunkSpoken = false
+        let speakBuffer = ""
+        const lastCharWasSpace = false
 
         while (true) {
           const { done, value } = await reader.read()
@@ -196,15 +196,17 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
                     })
                   }
 
-                  const words = parsed.token.trim().split(/\s+/).filter(Boolean)
-                  wordBuffer.push(...words)
+                  speakBuffer += parsed.token
+                  const hasSentenceEnd = /[.!?,;:]/.test(speakBuffer)
+                  const endsWithSpace = speakBuffer.endsWith(" ")
+                  const wordCount = speakBuffer.trim().split(/\s+/).filter(Boolean).length
 
-                  const threshold = firstChunkSpoken ? 2 : 1
-                  if (wordBuffer.length >= threshold) {
-                    const textToSpeak = wordBuffer.join(" ")
-                    speakChunk(textToSpeak)
-                    wordBuffer = []
-                    firstChunkSpoken = true
+                  if (hasSentenceEnd || (endsWithSpace && wordCount >= 3)) {
+                    const textToSpeak = speakBuffer.trim()
+                    if (textToSpeak) {
+                      speakChunk(textToSpeak)
+                    }
+                    speakBuffer = ""
                   }
                 }
               } catch {}
@@ -212,8 +214,8 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
           }
         }
 
-        if (wordBuffer.length > 0) {
-          speakChunk(wordBuffer.join(" "))
+        if (speakBuffer.trim()) {
+          speakChunk(speakBuffer.trim())
         }
       } catch (error) {
         console.error("[v0] Error:", error)
@@ -229,10 +231,6 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
   const checkText = useCallback(
     async (text: string, isFinal: boolean) => {
       if (!text || text.length < 3 || isProcessingRef.current) return
-
-      if (!isFinal) {
-        return
-      }
 
       const wordCount = text.trim().split(/\s+/).length
       if (wordCount < 3) return
@@ -331,22 +329,22 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
         } else if (interimText) {
           setInterimTranscript(interimText)
 
-          const fullInterim = currentParagraphRef.current
+          const fullInterimText = currentParagraphRef.current
             ? currentParagraphRef.current + " " + interimText.trim()
             : interimText.trim()
 
-          if (fullInterim !== lastInterimTextRef.current) {
-            lastInterimTextRef.current = fullInterim
+          if (fullInterimText !== lastInterimTextRef.current) {
+            lastInterimTextRef.current = fullInterimText
 
             if (interimCheckTimerRef.current) {
               clearTimeout(interimCheckTimerRef.current)
             }
 
             interimCheckTimerRef.current = setTimeout(() => {
-              if (!isProcessingRef.current && fullInterim.trim().split(/\s+/).length >= 3) {
-                checkText(fullInterim, true)
+              if (fullInterimText.trim().split(/\s+/).length >= 3) {
+                checkText(fullInterimText, false)
               }
-            }, 400)
+            }, 300)
           }
         }
       }
@@ -375,11 +373,6 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
   const stopListening = useCallback(() => {
     isListeningRef.current = false
 
-    if (interimCheckTimerRef.current) {
-      clearTimeout(interimCheckTimerRef.current)
-      interimCheckTimerRef.current = null
-    }
-
     if (recognitionRef.current) {
       recognitionRef.current.stop()
       recognitionRef.current = null
@@ -407,6 +400,11 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
     analyserRef.current = null
     setAudioLevel(0)
     setIsListening(false)
+
+    if (interimCheckTimerRef.current) {
+      clearTimeout(interimCheckTimerRef.current)
+      interimCheckTimerRef.current = null
+    }
   }, [])
 
   useEffect(() => {
