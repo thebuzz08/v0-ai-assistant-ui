@@ -229,10 +229,11 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
       if (!text || text.length < 3 || isProcessingRef.current) return
 
       if (!isFinal) {
-        const hasQuestionMark = text.includes("?")
-        const wordCount = text.trim().split(/\s+/).length
-        if (!hasQuestionMark && wordCount < 4) return
+        return
       }
+
+      const wordCount = text.trim().split(/\s+/).length
+      if (wordCount < 3) return
 
       if (text === lastProcessedTextRef.current) return
       lastProcessedTextRef.current = text
@@ -322,10 +323,6 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
           checkText(currentParagraphRef.current, true)
         } else if (interimText) {
           setInterimTranscript(interimText)
-          const fullText = currentParagraphRef.current
-            ? currentParagraphRef.current + " " + interimText.trim()
-            : interimText.trim()
-          checkText(fullText, false)
         }
       }
 

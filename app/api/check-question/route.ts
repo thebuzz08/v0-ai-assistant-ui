@@ -73,33 +73,34 @@ export async function GET(request: Request) {
       messages: [
         {
           role: "system",
-          content: `Extract any COMPLETE, ANSWERABLE question from this transcript. People often embed questions in casual speech.
+          content: `Extract COMPLETE, SENSIBLE questions from speech. Be STRICT - only extract questions that make logical sense to ask.
 
 Return JSON: {"isComplete": true/false, "question": "extracted question" or null}
 
-EXTRACT questions like:
-- "what is X" / "what are X" / "what was X"
-- "who is X" / "who are X"  
-- "when did X" / "when is X"
-- "where is X" / "where did X"
-- "how do X" / "how does X" / "how many X"
-- "why did X" / "why is X"
-- Math: "what is 3+3", "how much is 10 times 5"
-- Facts: "what's the capital of France", "who won the Super Bowl"
-- Current events: "what happened in the news", "what did [person] do"
+VALID questions (extract these):
+- Math with FULL expression: "what is 3 plus 3", "what is 10 times 5", "how much is 100 divided by 4"
+- Facts with SUBJECT: "who is Elon Musk", "what is the capital of France", "when did WW2 end"
+- Current events: "what happened in the news today", "who won the Super Bowl"
 
-IGNORE (return isComplete: false):
-- Incomplete: "what is the" "who was" "how do you"
-- Personal: "how are you", "what should I do", "how was your day"
-- Greetings: "hello", "hi there", "thanks"
+INVALID - DO NOT extract (return isComplete: false):
+- Incomplete math: "what is 3", "what is three", "how much is 5" (missing operation or second number)
+- Incomplete questions: "what is the", "who is", "how do you", "what about"
+- Meaningless: "what is", "who was the", "where is the"
+- Personal: "how are you", "what should I do", "how's it going"
+- Greetings: "hello", "hi there", "yeah", "okay"
+- Single word after "what is": "what is three" "what is five" (nobody asks what a number is)
+
+KEY RULE: For "what is X" math questions, MUST have an operation (plus, minus, times, divided, +, -, *, /) and TWO numbers.
+"what is 3+3" = VALID
+"what is 3" = INVALID
+"what is three" = INVALID
 
 Examples:
-"so I was at the park and by the way what is 3 plus 3 and then" -> {"isComplete": true, "question": "what is 3 plus 3"}
-"what happened in the news yesterday I was wondering" -> {"isComplete": true, "question": "what happened in the news yesterday"}
-"hey so who is Elon Musk anyway" -> {"isComplete": true, "question": "who is Elon Musk"}
+"yeah what is three" -> {"isComplete": false, "question": null}
+"what is 3 plus 3" -> {"isComplete": true, "question": "what is 3 plus 3"}
+"so who is the president of France" -> {"isComplete": true, "question": "who is the president of France"}
 "what is the" -> {"isComplete": false, "question": null}
-"how are you doing today" -> {"isComplete": false, "question": null}
-"hello there" -> {"isComplete": false, "question": null}`,
+"what is" -> {"isComplete": false, "question": null}`,
         },
         { role: "user", content: text },
       ],
