@@ -50,7 +50,6 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
   const isListeningRef = useRef(false)
   const bestVoiceRef = useRef<SpeechSynthesisVoice | null>(null)
   const isProcessingRef = useRef(false)
-  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null)
   const lastProcessedTextRef = useRef("")
   const answeredQuestionsRef = useRef<Set<string>>(new Set())
   const ttsUnlockedRef = useRef(false)
@@ -117,11 +116,10 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
 
     const utterance = new SpeechSynthesisUtterance(text)
     if (bestVoiceRef.current) utterance.voice = bestVoiceRef.current
-    utterance.rate = 1.15 // Slightly faster for snappier feel
+    utterance.rate = 1.3 // Increased rate even more for faster speech
     utterance.volume = 1
     utterance.onstart = () => setIsSpeaking(true)
     utterance.onend = () => {
-      // Only set speaking false if queue is empty
       if (window.speechSynthesis.pending === false) {
         setIsSpeaking(false)
       }
@@ -164,8 +162,8 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
         const decoder = new TextDecoder()
         let fullText = ""
         let addedAssistantEntry = false
-        const spokenLength = 0
-        let sentenceBuffer = ""
+        let wordBuffer: string[] = []
+        let firstChunkSpoken = false
 
         while (true) {
           const { done, value } = await reader.read()
@@ -183,7 +181,6 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
                 const parsed = JSON.parse(data)
                 if (parsed.token) {
                   fullText += parsed.token
-                  sentenceBuffer += parsed.token
 
                   if (!addedAssistantEntry) {
                     setTranscript((prev) => [...prev, { speaker: "assistant", text: fullText }])
@@ -196,15 +193,15 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
                     })
                   }
 
-                  const sentenceEnd = sentenceBuffer.match(/[.!?]\s*$/)
-                  const hasEnoughWords = sentenceBuffer.split(/\s+/).length >= 4
+                  const words = parsed.token.trim().split(/\s+/).filter(Boolean)
+                  wordBuffer.push(...words)
 
-                  if (sentenceEnd || (hasEnoughWords && sentenceBuffer.includes(","))) {
-                    const textToSpeak = sentenceBuffer.trim()
-                    if (textToSpeak) {
-                      speakChunk(textToSpeak)
-                      sentenceBuffer = ""
-                    }
+                  const threshold = firstChunkSpoken ? 2 : 1
+                  if (wordBuffer.length >= threshold) {
+                    const textToSpeak = wordBuffer.join(" ")
+                    speakChunk(textToSpeak)
+                    wordBuffer = []
+                    firstChunkSpoken = true
                   }
                 }
               } catch {}
@@ -212,8 +209,8 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
           }
         }
 
-        if (sentenceBuffer.trim()) {
-          speakChunk(sentenceBuffer.trim())
+        if (wordBuffer.length > 0) {
+          speakChunk(wordBuffer.join(" "))
         }
       } catch (error) {
         console.error("[v0] Error:", error)
@@ -226,27 +223,36 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
     [speakChunk],
   )
 
-  const checkForCompleteQuestion = useCallback(async () => {
-    const text = currentParagraphRef.current.trim()
+  const checkText = useCallback(
+    async (text: string, isFinal: boolean) => {
+      if (!text || text.length < 3 || isProcessingRef.current) return
 
-    if (!text || text.length < 3 || isProcessingRef.current) return
-
-    try {
-      const response = await fetch(`/api/check-question?text=${encodeURIComponent(text)}`)
-      const data = await response.json()
-
-      if (data.isComplete && data.question) {
-        const normalizedQuestion = data.question.toLowerCase().trim()
-        if (answeredQuestionsRef.current.has(normalizedQuestion)) {
-          return
-        }
-
-        answerQuestion(data.question)
+      if (!isFinal) {
+        const hasQuestionMark = text.includes("?")
+        const wordCount = text.trim().split(/\s+/).length
+        if (!hasQuestionMark && wordCount < 4) return
       }
-    } catch (error) {
-      console.error("[v0] Polling error:", error)
-    }
-  }, [answerQuestion])
+
+      if (text === lastProcessedTextRef.current) return
+      lastProcessedTextRef.current = text
+
+      try {
+        const response = await fetch(`/api/check-question?text=${encodeURIComponent(text)}`)
+        const data = await response.json()
+
+        if (data.isComplete && data.question) {
+          const normalizedQuestion = data.question.toLowerCase().trim()
+          if (answeredQuestionsRef.current.has(normalizedQuestion)) {
+            return
+          }
+          answerQuestion(data.question)
+        }
+      } catch (error) {
+        console.error("[v0] Check error:", error)
+      }
+    },
+    [answerQuestion],
+  )
 
   const startListening = useCallback(async () => {
     unlockTTS()
@@ -291,7 +297,7 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
       recognition.continuous = true
       recognition.interimResults = true
       recognition.lang = "en-US"
-      recognition.maxAlternatives = 3 // Add maxAlternatives for better accuracy
+      recognition.maxAlternatives = 1
 
       recognition.onresult = (event: SpeechRecognitionEvent) => {
         let finalText = ""
@@ -300,11 +306,7 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
         for (let i = event.resultIndex; i < event.results.length; i++) {
           const result = event.results[i]
           if (result.isFinal) {
-            const bestAlternative = result[0]
-            // Only accept if confidence is decent (or if confidence not provided, accept anyway)
-            if (bestAlternative.confidence === 0 || bestAlternative.confidence > 0.5) {
-              finalText += bestAlternative.transcript
-            }
+            finalText += result[0].transcript
           } else {
             interimText += result[0].transcript
           }
@@ -316,8 +318,13 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
             : finalText.trim()
           setCurrentParagraph(currentParagraphRef.current)
           setInterimTranscript("")
+          checkText(currentParagraphRef.current, true)
         } else if (interimText) {
           setInterimTranscript(interimText)
+          const fullText = currentParagraphRef.current
+            ? currentParagraphRef.current + " " + interimText.trim()
+            : interimText.trim()
+          checkText(fullText, false)
         }
       }
 
@@ -336,21 +343,14 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
 
       recognition.start()
       recognitionRef.current = recognition
-
-      pollIntervalRef.current = setInterval(checkForCompleteQuestion, 200)
     } catch (error) {
       console.error("[v0] Failed to start listening:", error)
       setHasPermission(false)
     }
-  }, [checkForCompleteQuestion, unlockTTS])
+  }, [checkText, unlockTTS])
 
   const stopListening = useCallback(() => {
     isListeningRef.current = false
-
-    if (pollIntervalRef.current) {
-      clearInterval(pollIntervalRef.current)
-      pollIntervalRef.current = null
-    }
 
     if (recognitionRef.current) {
       recognitionRef.current.stop()
@@ -384,7 +384,6 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     return () => {
       if (recognitionRef.current) recognitionRef.current.stop()
-      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current)
       if (typeof window !== "undefined" && "speechSynthesis" in window) window.speechSynthesis.cancel()
     }
   }, [])
