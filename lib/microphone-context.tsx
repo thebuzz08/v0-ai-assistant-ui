@@ -49,12 +49,10 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
   const currentParagraphRef = useRef("")
   const isListeningRef = useRef(false)
   const bestVoiceRef = useRef<SpeechSynthesisVoice | null>(null)
-  const isProcessingRef = useRef(false)
-  const lastProcessedTextRef = useRef("")
-  const answeredQuestionsRef = useRef<Set<string>>(new Set())
   const ttsUnlockedRef = useRef(false)
-  const interimCheckTimerRef = useRef<NodeJS.Timeout | null>(null)
-  const lastInterimTextRef = useRef("")
+
+  const pauseTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const processingLockRef = useRef(false)
 
   useEffect(() => {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) return
@@ -85,8 +83,6 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
   const unlockTTS = useCallback(() => {
     if (ttsUnlockedRef.current) return
     if (!("speechSynthesis" in window)) return
-
-    // Create a silent utterance to unlock TTS on Safari
     const utterance = new SpeechSynthesisUtterance("")
     utterance.volume = 0
     utterance.onend = () => {
@@ -96,59 +92,61 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const speakText = useCallback((text: string) => {
-    if (!("speechSynthesis" in window)) return
+    if (!("speechSynthesis" in window) || !text.trim()) return
+
+    // Clean text for TTS
+    const cleanText = text.replace(/[*_#`]/g, "").trim()
+    if (!cleanText) return
 
     window.speechSynthesis.cancel()
-    const utterance = new SpeechSynthesisUtterance(text)
+    const utterance = new SpeechSynthesisUtterance(cleanText)
     if (bestVoiceRef.current) utterance.voice = bestVoiceRef.current
-    utterance.rate = 1.1
+    utterance.rate = 1.2
     utterance.volume = 1
     utterance.onstart = () => setIsSpeaking(true)
     utterance.onend = () => setIsSpeaking(false)
-    utterance.onerror = (e) => {
-      console.error("[v0] TTS error:", e)
-      setIsSpeaking(false)
-    }
+    utterance.onerror = () => setIsSpeaking(false)
     window.speechSynthesis.speak(utterance)
   }, [])
 
-  const speakChunk = useCallback((text: string) => {
+  const speakBufferRef = useRef("")
+  const speakChunk = useCallback((token: string, isLast: boolean) => {
     if (!("speechSynthesis" in window)) return
-    if (!text.trim()) return
 
-    const utterance = new SpeechSynthesisUtterance(text)
-    if (bestVoiceRef.current) utterance.voice = bestVoiceRef.current
-    utterance.rate = 1.3 // Increased rate even more for faster speech
-    utterance.volume = 1
-    utterance.onstart = () => setIsSpeaking(true)
-    utterance.onend = () => {
-      if (window.speechSynthesis.pending === false) {
-        setIsSpeaking(false)
+    speakBufferRef.current += token
+
+    const shouldSpeak = isLast || /[.!?,]/.test(speakBufferRef.current.slice(-1))
+
+    if (shouldSpeak && speakBufferRef.current.trim()) {
+      const textToSpeak = speakBufferRef.current.replace(/[*_#`]/g, "").trim()
+      if (textToSpeak) {
+        const utterance = new SpeechSynthesisUtterance(textToSpeak)
+        if (bestVoiceRef.current) utterance.voice = bestVoiceRef.current
+        utterance.rate = 1.2
+        utterance.volume = 1
+        utterance.onstart = () => setIsSpeaking(true)
+        utterance.onend = () => {
+          if (!window.speechSynthesis.pending) setIsSpeaking(false)
+        }
+        window.speechSynthesis.speak(utterance)
       }
+      speakBufferRef.current = ""
     }
-    window.speechSynthesis.speak(utterance)
   }, [])
 
   const answerQuestion = useCallback(
-    async (question: string, fullText: string) => {
-      if (isProcessingRef.current) return
+    async (question: string, fullUserText: string) => {
+      // Use lock to prevent any concurrent calls
+      if (processingLockRef.current) return
+      processingLockRef.current = true
 
-      const normalizedQuestion = question.toLowerCase().trim()
-      if (answeredQuestionsRef.current.has(normalizedQuestion)) {
-        return
-      }
-
-      answeredQuestionsRef.current.add(normalizedQuestion)
-
-      isProcessingRef.current = true
       setIsProcessing(true)
 
-      setTranscript((prev) => [...prev, { speaker: "user", text: fullText }])
-
+      // Add user entry and clear state IMMEDIATELY
+      setTranscript((prev) => [...prev, { speaker: "user", text: fullUserText }])
       currentParagraphRef.current = ""
       setCurrentParagraph("")
       setInterimTranscript("")
-      lastProcessedTextRef.current = ""
 
       try {
         const response = await fetch("/api/check-question", {
@@ -157,16 +155,15 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
           body: JSON.stringify({ text: question }),
         })
 
-        if (!response.ok) throw new Error("API error")
+        if (!response.ok || !response.body) {
+          throw new Error("API error")
+        }
 
-        const reader = response.body?.getReader()
-        if (!reader) throw new Error("No reader")
-
+        const reader = response.body.getReader()
         const decoder = new TextDecoder()
-        let fullTextResponse = ""
-        let addedAssistantEntry = false
-        let speakBuffer = ""
-        const lastCharWasSpace = false
+        let fullResponse = ""
+        let assistantEntryAdded = false
+        speakBufferRef.current = ""
 
         while (true) {
           const { done, value } = await reader.read()
@@ -183,71 +180,48 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
               try {
                 const parsed = JSON.parse(data)
                 if (parsed.token) {
-                  fullTextResponse += parsed.token
+                  fullResponse += parsed.token
 
-                  if (!addedAssistantEntry) {
-                    setTranscript((prev) => [...prev, { speaker: "assistant", text: fullTextResponse }])
-                    addedAssistantEntry = true
+                  if (!assistantEntryAdded) {
+                    setTranscript((prev) => [...prev, { speaker: "assistant", text: fullResponse }])
+                    assistantEntryAdded = true
                   } else {
                     setTranscript((prev) => {
-                      const newTranscript = [...prev]
-                      newTranscript[newTranscript.length - 1] = { speaker: "assistant", text: fullTextResponse }
-                      return newTranscript
+                      const updated = [...prev]
+                      updated[updated.length - 1] = { speaker: "assistant", text: fullResponse }
+                      return updated
                     })
                   }
 
-                  speakBuffer += parsed.token
-                  const hasSentenceEnd = /[.!?,;:]/.test(speakBuffer)
-                  const endsWithSpace = speakBuffer.endsWith(" ")
-                  const wordCount = speakBuffer.trim().split(/\s+/).filter(Boolean).length
-
-                  if (hasSentenceEnd || (endsWithSpace && wordCount >= 3)) {
-                    const textToSpeak = speakBuffer.trim()
-                    if (textToSpeak) {
-                      speakChunk(textToSpeak)
-                    }
-                    speakBuffer = ""
-                  }
+                  speakChunk(parsed.token, false)
                 }
               } catch {}
             }
           }
         }
 
-        if (speakBuffer.trim()) {
-          speakChunk(speakBuffer.trim())
-        }
+        speakChunk("", true)
       } catch (error) {
-        console.error("[v0] Error:", error)
-        answeredQuestionsRef.current.delete(normalizedQuestion)
+        console.error("[v0] Answer error:", error)
       } finally {
-        isProcessingRef.current = false
         setIsProcessing(false)
+        processingLockRef.current = false
       }
     },
     [speakChunk],
   )
 
-  const checkText = useCallback(
-    async (text: string, isFinal: boolean) => {
-      if (!text || text.length < 3 || isProcessingRef.current) return
-
-      const wordCount = text.trim().split(/\s+/).length
-      if (wordCount < 2) return // reduced from 3 to 2 words minimum
-
-      if (text === lastProcessedTextRef.current) return
-      lastProcessedTextRef.current = text
+  const checkAndAnswer = useCallback(
+    async (text: string) => {
+      const trimmed = text.trim()
+      if (!trimmed || trimmed.length < 5 || processingLockRef.current) return
 
       try {
-        const response = await fetch(`/api/check-question?text=${encodeURIComponent(text)}`)
+        const response = await fetch(`/api/check-question?text=${encodeURIComponent(trimmed)}`)
         const data = await response.json()
 
-        if (data.isComplete && data.question) {
-          const normalizedQuestion = data.question.toLowerCase().trim()
-          if (answeredQuestionsRef.current.has(normalizedQuestion)) {
-            return
-          }
-          answerQuestion(data.question, text)
+        if (data.isComplete && data.question && !processingLockRef.current) {
+          answerQuestion(data.question, trimmed)
         }
       } catch (error) {
         console.error("[v0] Check error:", error)
@@ -290,10 +264,7 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
       setHasPermission(true)
 
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
-      if (!SpeechRecognition) {
-        console.error("[v0] Web Speech API not supported")
-        return
-      }
+      if (!SpeechRecognition) return
 
       const recognition = new SpeechRecognition()
       recognition.continuous = true
@@ -302,6 +273,8 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
       recognition.maxAlternatives = 1
 
       recognition.onresult = (event: SpeechRecognitionEvent) => {
+        if (processingLockRef.current) return
+
         let finalText = ""
         let interimText = ""
 
@@ -314,54 +287,39 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
           }
         }
 
-        if (finalText) {
-          if (interimCheckTimerRef.current) {
-            clearTimeout(interimCheckTimerRef.current)
-            interimCheckTimerRef.current = null
-          }
+        // Clear any existing timer
+        if (pauseTimerRef.current) {
+          clearTimeout(pauseTimerRef.current)
+          pauseTimerRef.current = null
+        }
 
+        if (finalText) {
+          // Append final text to paragraph
           currentParagraphRef.current = currentParagraphRef.current
             ? currentParagraphRef.current + " " + finalText.trim()
             : finalText.trim()
           setCurrentParagraph(currentParagraphRef.current)
           setInterimTranscript("")
-          checkText(currentParagraphRef.current, true)
         } else if (interimText) {
           setInterimTranscript(interimText)
+        }
 
-          const fullInterimText = currentParagraphRef.current
-            ? currentParagraphRef.current + " " + interimText.trim()
-            : interimText.trim()
+        // Get full text including interim
+        const fullText = currentParagraphRef.current
+          ? currentParagraphRef.current + (interimText ? " " + interimText : "")
+          : interimText
 
-          if (fullInterimText !== lastInterimTextRef.current) {
-            lastInterimTextRef.current = fullInterimText
-
-            if (interimCheckTimerRef.current) {
-              clearTimeout(interimCheckTimerRef.current)
+        if (fullText.trim().length > 5) {
+          pauseTimerRef.current = setTimeout(() => {
+            if (!processingLockRef.current) {
+              checkAndAnswer(fullText.trim())
             }
-
-            const looksComplete =
-              /[?]/.test(fullInterimText) ||
-              /\b(what|who|where|when|why|how|is|are|can|could|would|will|does|did)\b.*\b(is|are|was|were|plus|minus|times|divided|\+|-|\*|\/|×|÷)\b/i.test(
-                fullInterimText,
-              )
-
-            if (looksComplete && fullInterimText.trim().split(/\s+/).length >= 2) {
-              // Check immediately for likely complete questions
-              checkText(fullInterimText, false)
-            } else {
-              interimCheckTimerRef.current = setTimeout(() => {
-                if (fullInterimText.trim().split(/\s+/).length >= 2) {
-                  checkText(fullInterimText, false)
-                }
-              }, 200)
-            }
-          }
+          }, 200)
         }
       }
 
       recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-        console.error("[v0] Speech recognition error:", event.error)
+        console.error("[v0] Recognition error:", event.error)
         if (event.error === "not-allowed") setHasPermission(false)
       }
 
@@ -376,13 +334,18 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
       recognition.start()
       recognitionRef.current = recognition
     } catch (error) {
-      console.error("[v0] Failed to start listening:", error)
+      console.error("[v0] Start error:", error)
       setHasPermission(false)
     }
-  }, [checkText, unlockTTS])
+  }, [checkAndAnswer, unlockTTS])
 
   const stopListening = useCallback(() => {
     isListeningRef.current = false
+
+    if (pauseTimerRef.current) {
+      clearTimeout(pauseTimerRef.current)
+      pauseTimerRef.current = null
+    }
 
     if (recognitionRef.current) {
       recognitionRef.current.stop()
@@ -392,7 +355,7 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
     setInterimTranscript("")
     setCurrentParagraph("")
     currentParagraphRef.current = ""
-    answeredQuestionsRef.current.clear()
+    processingLockRef.current = false
 
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.cancel()
@@ -411,11 +374,6 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
     analyserRef.current = null
     setAudioLevel(0)
     setIsListening(false)
-
-    if (interimCheckTimerRef.current) {
-      clearTimeout(interimCheckTimerRef.current)
-      interimCheckTimerRef.current = null
-    }
   }, [])
 
   useEffect(() => {
@@ -434,7 +392,6 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
       setHasPermission(true)
       return true
     } catch (error) {
-      console.error("[v0] Failed to request permission:", error)
       setHasPermission(false)
       return false
     }

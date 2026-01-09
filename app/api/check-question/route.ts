@@ -53,8 +53,7 @@ async function searchTavily(query: string): Promise<string> {
       return data.results.map((r: { title: string; content: string }) => `${r.title}: ${r.content}`).join("\n")
     }
     return ""
-  } catch (error) {
-    console.error("[v0] Tavily search error:", error)
+  } catch {
     return ""
   }
 }
@@ -63,7 +62,7 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url)
   const text = searchParams.get("text")
 
-  if (!text || text.trim().length < 3) {
+  if (!text || text.trim().length < 5) {
     return Response.json({ isComplete: false, question: null })
   }
 
@@ -73,41 +72,36 @@ export async function GET(request: Request) {
       messages: [
         {
           role: "system",
-          content: `You detect complete questions from speech. Return JSON: {"isComplete": true/false, "question": "extracted question" or null}
+          content: `Detect if there's a complete, answerable question in this speech. Return JSON only.
 
-A COMPLETE question is one that:
-1. Has enough context to give a meaningful answer (not just restating the question)
-2. Is asking for information, calculation, or facts
+ANSWER these (return isComplete: true):
+- Math: "what is 5+5", "how much is 17 times 4"
+- Facts: "who is Elon Musk", "what's the capital of Japan"  
+- Info: "what happened in the news", "how tall is the Eiffel Tower"
+- Explanations: "why is the sky blue", "how does wifi work"
 
-EXTRACT these (isComplete: true):
-- "what is 3+3" -> answer is "6" (not just "3+3")
-- "what is 17 times 4" -> answer is "68"
-- "who is Obama" -> answer is information about Obama
-- "what's the capital of France" -> answer is "Paris"
-- "what happened in the news" -> answer is news info
+IGNORE these (return isComplete: false):
+- Incomplete: "what is the", "who was"
+- Greetings: "how are you", "hey siri", "what's up"
+- Personal: "how was my day", "what should I do"
+- Non-questions: "yeah okay", "so anyway", "I was thinking"
+- Single words/numbers alone: "three", "what", "hello"
 
-DO NOT extract (isComplete: false):
-- "what is three" -> answer would just be "three" (meaningless)
-- "what is the" -> incomplete, waiting for more
-- "how are you" -> personal/greeting, not factual
-- "yeah so anyway" -> not a question
-- "hey Siri" -> just a wake word
+Extract the actual question, ignoring filler words like "yeah", "so", "um", "hey siri".
 
-Key test: Would the answer be DIFFERENT from the question itself? If yes, it's valid.
-
-Speech may have filler words - ignore "yeah", "so", "hey Siri", "umm" and extract the actual question.`,
+Return: {"isComplete": true/false, "question": "the extracted question" or null}`,
         },
         { role: "user", content: text },
       ],
       temperature: 0,
-      max_tokens: 100,
+      max_tokens: 80,
       response_format: { type: "json_object" },
     })
 
     const result = JSON.parse(response.choices[0]?.message?.content || '{"isComplete": false, "question": null}')
     return Response.json(result)
   } catch (error) {
-    console.error("[v0] Completeness check error:", error)
+    console.error("[v0] Detection error:", error)
     return Response.json({ isComplete: false, question: null })
   }
 }
@@ -116,8 +110,10 @@ export async function POST(request: Request) {
   try {
     const { text } = await request.json()
 
-    if (!text || text.trim().length < 2) {
-      return Response.json({ isQuestion: false, answer: null })
+    if (!text || text.trim().length < 3) {
+      return new Response("data: [DONE]\n\n", {
+        headers: { "Content-Type": "text/event-stream" },
+      })
     }
 
     let searchContext = ""
@@ -125,14 +121,15 @@ export async function POST(request: Request) {
       searchContext = await searchTavily(text)
     }
 
-    const systemPrompt = `You are an ultra-fast voice assistant. Answer questions in 2-8 words max.
+    const systemPrompt = `Ultra-concise voice assistant. Answer in 2-8 words only.
 
-RULES:
-1. Give the raw answer only, no preamble
-2. If search results are provided, use them for accuracy
-3. Answer ALL factual questions: math, science, history, current events, famous people, companies, etc.
+Rules:
+- Direct answer, no preamble or explanation
+- Use search results if provided for accuracy
+- Numbers: just the number (e.g., "68" not "The answer is 68")
+- Facts: key info only (e.g., "Tesla CEO" not "He is the CEO of Tesla")
 
-${searchContext ? `\nSEARCH RESULTS:\n${searchContext}` : ""}`
+${searchContext ? `\nSearch results:\n${searchContext}` : ""}`
 
     const stream = await groq.chat.completions.create({
       model: "llama-3.3-70b-versatile",
@@ -140,26 +137,27 @@ ${searchContext ? `\nSEARCH RESULTS:\n${searchContext}` : ""}`
         { role: "system", content: systemPrompt },
         { role: "user", content: text },
       ],
-      temperature: 0.3,
-      max_tokens: 50,
+      temperature: 0.2,
+      max_tokens: 40,
       stream: true,
     })
 
     const encoder = new TextEncoder()
     const readableStream = new ReadableStream({
       async start(controller) {
-        let fullText = ""
-
-        for await (const chunk of stream) {
-          const token = chunk.choices[0]?.delta?.content || ""
-          if (token) {
-            fullText += token
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token })}\n\n`))
+        try {
+          for await (const chunk of stream) {
+            const token = chunk.choices[0]?.delta?.content || ""
+            if (token) {
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ token })}\n\n`))
+            }
           }
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"))
+        } catch (error) {
+          console.error("[v0] Stream error:", error)
+        } finally {
+          controller.close()
         }
-
-        controller.enqueue(encoder.encode("data: [DONE]\n\n"))
-        controller.close()
       },
     })
 
@@ -171,7 +169,9 @@ ${searchContext ? `\nSEARCH RESULTS:\n${searchContext}` : ""}`
       },
     })
   } catch (error) {
-    console.error("[v0] API Error:", error)
-    return Response.json({ isQuestion: false, answer: null, error: String(error) }, { status: 500 })
+    console.error("[v0] POST error:", error)
+    return new Response("data: [DONE]\n\n", {
+      headers: { "Content-Type": "text/event-stream" },
+    })
   }
 }
