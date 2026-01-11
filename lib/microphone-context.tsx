@@ -53,7 +53,6 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
 
   const pauseTimerRef = useRef<NodeJS.Timeout | null>(null)
   const processingLockRef = useRef(false)
-  const lastSentTextRef = useRef("")
 
   useEffect(() => {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) return
@@ -216,10 +215,8 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
     async (text: string) => {
       const trimmed = text.trim()
       if (!trimmed || trimmed.length < 5 || processingLockRef.current) return
-      if (lastSentTextRef.current && trimmed.startsWith(lastSentTextRef.current)) return
 
       processingLockRef.current = true
-      lastSentTextRef.current = trimmed
 
       try {
         const response = await fetch(`/api/check-question?text=${encodeURIComponent(trimmed)}`)
@@ -233,6 +230,9 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
         const data = await response.json()
 
         if (data.isComplete && data.question) {
+          currentParagraphRef.current = ""
+          setCurrentParagraph("")
+          setInterimTranscript("")
           await answerQuestion(data.question, trimmed)
         } else {
           processingLockRef.current = false
@@ -288,7 +288,7 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
       recognition.maxAlternatives = 1
 
       recognition.onresult = (event: SpeechRecognitionEvent) => {
-        if (!isListeningRef.current || processingLockRef.current) return
+        if (!isListeningRef.current) return
 
         let finalText = ""
         let interimText = ""
@@ -316,16 +316,26 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
 
           const fullText = currentParagraphRef.current.trim()
           if (fullText.length > 5 && isListeningRef.current && !processingLockRef.current) {
-            if (!lastSentTextRef.current || !fullText.startsWith(lastSentTextRef.current)) {
-              pauseTimerRef.current = setTimeout(() => {
-                if (!processingLockRef.current && isListeningRef.current) {
-                  checkAndAnswer(fullText)
-                }
-              }, 300)
-            }
+            pauseTimerRef.current = setTimeout(() => {
+              if (!processingLockRef.current && isListeningRef.current) {
+                checkAndAnswer(fullText)
+              }
+            }, 200)
           }
-        } else if (interimText) {
+        } else if (interimText && !processingLockRef.current) {
           setInterimTranscript(interimText)
+
+          const combinedText = (currentParagraphRef.current + " " + interimText).trim()
+          if (combinedText.length > 10 && isListeningRef.current) {
+            pauseTimerRef.current = setTimeout(() => {
+              if (!processingLockRef.current && isListeningRef.current) {
+                currentParagraphRef.current = combinedText
+                setCurrentParagraph(combinedText)
+                setInterimTranscript("")
+                checkAndAnswer(combinedText)
+              }
+            }, 400)
+          }
         }
       }
 
@@ -367,7 +377,6 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
     setCurrentParagraph("")
     currentParagraphRef.current = ""
     processingLockRef.current = false
-    lastSentTextRef.current = ""
 
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.cancel()
