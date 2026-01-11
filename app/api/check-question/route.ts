@@ -1,6 +1,11 @@
 import Groq from "groq-sdk"
 
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY })
+// Function to get Groq client and throw error if API key is not set
+function getGroqClient() {
+  const apiKey = process.env.GROQ_API_KEY
+  if (!apiKey) throw new Error("GROQ_API_KEY not set")
+  return new Groq({ apiKey })
+}
 
 function needsWebSearch(text: string): boolean {
   const searchKeywords = [
@@ -67,6 +72,8 @@ export async function GET(request: Request) {
   }
 
   try {
+    const groq = getGroqClient()
+
     const response = await groq.chat.completions.create({
       model: "llama-3.1-8b-instant",
       messages: [
@@ -116,6 +123,8 @@ export async function POST(request: Request) {
       })
     }
 
+    const groq = getGroqClient()
+
     let searchContext = ""
     if (needsWebSearch(text)) {
       searchContext = await searchTavily(text)
@@ -155,6 +164,7 @@ ${searchContext ? `\nSearch results:\n${searchContext}` : ""}`
           controller.enqueue(encoder.encode("data: [DONE]\n\n"))
         } catch (error) {
           console.error("[v0] Stream error:", error)
+          controller.enqueue(encoder.encode("data: [DONE]\n\n"))
         } finally {
           controller.close()
         }

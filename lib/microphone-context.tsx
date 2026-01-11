@@ -218,6 +218,12 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
 
       try {
         const response = await fetch(`/api/check-question?text=${encodeURIComponent(trimmed)}`)
+
+        if (!response.ok) {
+          console.error("[v0] API returned error status:", response.status)
+          return
+        }
+
         const data = await response.json()
 
         if (data.isComplete && data.question && !processingLockRef.current) {
@@ -273,7 +279,7 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
       recognition.maxAlternatives = 1
 
       recognition.onresult = (event: SpeechRecognitionEvent) => {
-        if (processingLockRef.current) return
+        if (!isListeningRef.current || processingLockRef.current) return
 
         let finalText = ""
         let interimText = ""
@@ -309,9 +315,9 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
           ? currentParagraphRef.current + (interimText ? " " + interimText : "")
           : interimText
 
-        if (fullText.trim().length > 5) {
+        if (fullText.trim().length > 5 && isListeningRef.current) {
           pauseTimerRef.current = setTimeout(() => {
-            if (!processingLockRef.current) {
+            if (!processingLockRef.current && isListeningRef.current) {
               checkAndAnswer(fullText.trim())
             }
           }, 200)
