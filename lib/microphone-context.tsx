@@ -307,6 +307,10 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
           pauseTimerRef.current = null
         }
 
+        if (interimText) {
+          setInterimTranscript(interimText)
+        }
+
         if (finalText) {
           currentParagraphRef.current = currentParagraphRef.current
             ? currentParagraphRef.current + " " + finalText.trim()
@@ -321,20 +325,6 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
                 checkAndAnswer(fullText)
               }
             }, 200)
-          }
-        } else if (interimText && !processingLockRef.current) {
-          setInterimTranscript(interimText)
-
-          const combinedText = (currentParagraphRef.current + " " + interimText).trim()
-          if (combinedText.length > 10 && isListeningRef.current) {
-            pauseTimerRef.current = setTimeout(() => {
-              if (!processingLockRef.current && isListeningRef.current) {
-                currentParagraphRef.current = combinedText
-                setCurrentParagraph(combinedText)
-                setInterimTranscript("")
-                checkAndAnswer(combinedText)
-              }
-            }, 400)
           }
         }
       }
