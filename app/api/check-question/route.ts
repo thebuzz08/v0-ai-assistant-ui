@@ -6,7 +6,8 @@ function getGroqClient() {
   return new Groq({ apiKey, dangerouslyAllowBrowser: true })
 }
 
-function needsWebSearch(text: string): boolean {
+function needsWebSearch(text: string | undefined): boolean {
+  if (!text) return false
   const keywords = ["today", "yesterday", "news", "2024", "2025", "2026", "current", "latest", "recent", "price", "weather", "score", "won", "happened"]
   return keywords.some(k => text.toLowerCase().includes(k))
 }
