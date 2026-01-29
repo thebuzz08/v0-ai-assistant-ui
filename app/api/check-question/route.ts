@@ -3,7 +3,7 @@ import Groq from "groq-sdk"
 function getGroqClient() {
   const apiKey = process.env.GROQ_API_KEY
   if (!apiKey) throw new Error("GROQ_API_KEY not set")
-  return new Groq({ apiKey })
+  return new Groq({ apiKey, dangerouslyAllowBrowser: true })
 }
 
 function needsWebSearch(text: string): boolean {
