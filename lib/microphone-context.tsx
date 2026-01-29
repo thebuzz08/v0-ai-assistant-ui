@@ -48,206 +48,151 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
   const recognitionRef = useRef<SpeechRecognition | null>(null)
   const currentParagraphRef = useRef("")
   const isListeningRef = useRef(false)
-  const bestVoiceRef = useRef<SpeechSynthesisVoice | null>(null)
-  const ttsUnlockedRef = useRef(false)
-
   const pauseTimerRef = useRef<NodeJS.Timeout | null>(null)
   const processingLockRef = useRef(false)
+  const audioElementRef = useRef<HTMLAudioElement | null>(null)
 
-  useEffect(() => {
-    if (typeof window === "undefined" || !("speechSynthesis" in window)) return
+  // ElevenLabs TTS - streams audio for low latency
+  const speakWithElevenLabs = useCallback(async (text: string) => {
+    if (!text.trim()) return
+    
+    setIsSpeaking(true)
+    
+    try {
+      const response = await fetch("/api/tts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: text.replace(/[*_#`]/g, "").trim() }),
+      })
 
-    const findBestVoice = () => {
-      const voices = window.speechSynthesis.getVoices()
-      if (voices.length === 0) return
-
-      const preferredVoices = ["Samantha", "Alex", "Ava", "Karen", "Microsoft Aria", "Google US English"]
-      for (const preferred of preferredVoices) {
-        const voice = voices.find((v) => v.name.includes(preferred) && v.lang.startsWith("en"))
-        if (voice) {
-          bestVoiceRef.current = voice
-          return
-        }
+      if (!response.ok || !response.body) {
+        setIsSpeaking(false)
+        return
       }
-      const anyEnglish = voices.find((v) => v.lang.startsWith("en"))
-      if (anyEnglish) bestVoiceRef.current = anyEnglish
-    }
 
-    findBestVoice()
-    window.speechSynthesis.onvoiceschanged = findBestVoice
-    return () => {
-      window.speechSynthesis.onvoiceschanged = null
-    }
-  }, [])
-
-  const unlockTTS = useCallback(() => {
-    if (ttsUnlockedRef.current) return
-    if (!("speechSynthesis" in window)) return
-    const utterance = new SpeechSynthesisUtterance("")
-    utterance.volume = 0
-    utterance.onend = () => {
-      ttsUnlockedRef.current = true
-    }
-    window.speechSynthesis.speak(utterance)
-  }, [])
-
-  const speakText = useCallback((text: string) => {
-    if (!("speechSynthesis" in window) || !text.trim()) return
-
-    // Clean text for TTS
-    const cleanText = text.replace(/[*_#`]/g, "").trim()
-    if (!cleanText) return
-
-    window.speechSynthesis.cancel()
-    const utterance = new SpeechSynthesisUtterance(cleanText)
-    if (bestVoiceRef.current) utterance.voice = bestVoiceRef.current
-    utterance.rate = 1.2
-    utterance.volume = 1
-    utterance.onstart = () => setIsSpeaking(true)
-    utterance.onend = () => setIsSpeaking(false)
-    utterance.onerror = () => setIsSpeaking(false)
-    window.speechSynthesis.speak(utterance)
-  }, [])
-
-  const speakBufferRef = useRef("")
-  const speakChunk = useCallback((token: string, isLast: boolean) => {
-    if (!("speechSynthesis" in window)) return
-
-    speakBufferRef.current += token
-
-    const shouldSpeak = isLast || /[.!?,]/.test(speakBufferRef.current.slice(-1))
-
-    if (shouldSpeak && speakBufferRef.current.trim()) {
-      const textToSpeak = speakBufferRef.current.replace(/[*_#`]/g, "").trim()
-      if (textToSpeak) {
-        const utterance = new SpeechSynthesisUtterance(textToSpeak)
-        if (bestVoiceRef.current) utterance.voice = bestVoiceRef.current
-        utterance.rate = 1.2
-        utterance.volume = 1
-        utterance.onstart = () => setIsSpeaking(true)
-        utterance.onend = () => {
-          if (!window.speechSynthesis.pending) setIsSpeaking(false)
-        }
-        window.speechSynthesis.speak(utterance)
+      // Create audio element and play streamed audio
+      const audioBlob = await response.blob()
+      const audioUrl = URL.createObjectURL(audioBlob)
+      
+      if (audioElementRef.current) {
+        audioElementRef.current.pause()
+        URL.revokeObjectURL(audioElementRef.current.src)
       }
-      speakBufferRef.current = ""
+      
+      const audio = new Audio(audioUrl)
+      audioElementRef.current = audio
+      audio.onended = () => {
+        setIsSpeaking(false)
+        URL.revokeObjectURL(audioUrl)
+      }
+      audio.onerror = () => {
+        setIsSpeaking(false)
+        URL.revokeObjectURL(audioUrl)
+      }
+      await audio.play()
+    } catch (error) {
+      console.error("[TTS] Error:", error)
+      setIsSpeaking(false)
     }
   }, [])
 
-  const answerQuestion = useCallback(
-    async (question: string, fullUserText: string) => {
-      // Use lock to prevent any concurrent calls
-      if (processingLockRef.current) return
-      processingLockRef.current = true
+  // Single unified function - sends text, gets detection + answer in one call
+  const processText = useCallback(async (text: string) => {
+    const trimmed = text.trim()
+    if (!trimmed || trimmed.length < 5 || processingLockRef.current) return
+    
+    processingLockRef.current = true
+    setIsProcessing(true)
+    
+    // Clear state immediately to prevent duplicates
+    const userText = trimmed
+    currentParagraphRef.current = ""
+    setCurrentParagraph("")
+    setInterimTranscript("")
 
-      setIsProcessing(true)
+    try {
+      const response = await fetch("/api/check-question", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: userText }),
+      })
 
-      // Add user entry and clear state IMMEDIATELY
-      setTranscript((prev) => [...prev, { speaker: "user", text: fullUserText }])
-      currentParagraphRef.current = ""
-      setCurrentParagraph("")
-      setInterimTranscript("")
-
-      try {
-        const response = await fetch("/api/check-question", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: question }),
-        })
-
-        if (!response.ok || !response.body) {
-          throw new Error("API error")
-        }
-
-        const reader = response.body.getReader()
-        const decoder = new TextDecoder()
-        let fullResponse = ""
-        let assistantEntryAdded = false
-        speakBufferRef.current = ""
-
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-
-          const chunk = decoder.decode(value, { stream: true })
-          const lines = chunk.split("\n")
-
-          for (const line of lines) {
-            if (line.startsWith("data: ")) {
-              const data = line.slice(6)
-              if (data === "[DONE]") continue
-
-              try {
-                const parsed = JSON.parse(data)
-                if (parsed.token) {
-                  fullResponse += parsed.token
-
-                  if (!assistantEntryAdded) {
-                    setTranscript((prev) => [...prev, { speaker: "assistant", text: fullResponse }])
-                    assistantEntryAdded = true
-                  } else {
-                    setTranscript((prev) => {
-                      const updated = [...prev]
-                      updated[updated.length - 1] = { speaker: "assistant", text: fullResponse }
-                      return updated
-                    })
-                  }
-
-                  speakChunk(parsed.token, false)
-                }
-              } catch {}
-            }
-          }
-        }
-
-        speakChunk("", true)
-      } catch (error) {
-        console.error("[v0] Answer error:", error)
-      } finally {
+      // Check if it's a streaming response (question was answered) or JSON (no question)
+      const contentType = response.headers.get("content-type") || ""
+      
+      if (contentType.includes("application/json")) {
+        // No question detected - don't add to transcript
         setIsProcessing(false)
         processingLockRef.current = false
+        return
       }
-    },
-    [speakChunk],
-  )
 
-  const checkAndAnswer = useCallback(
-    async (text: string) => {
-      const trimmed = text.trim()
-      if (!trimmed || trimmed.length < 5 || processingLockRef.current) return
-
-      processingLockRef.current = true
-
-      try {
-        const response = await fetch(`/api/check-question?text=${encodeURIComponent(trimmed)}`)
-
-        if (!response.ok) {
-          console.error("[v0] API returned error status:", response.status)
-          processingLockRef.current = false
-          return
-        }
-
-        const data = await response.json()
-
-        if (data.isComplete && data.question) {
-          currentParagraphRef.current = ""
-          setCurrentParagraph("")
-          setInterimTranscript("")
-          await answerQuestion(data.question, trimmed)
-        } else {
-          processingLockRef.current = false
-        }
-      } catch (error) {
-        console.error("[v0] Check error:", error)
+      if (!response.body) {
+        setIsProcessing(false)
         processingLockRef.current = false
+        return
       }
-    },
-    [answerQuestion],
-  )
+
+      // Stream response - question was detected
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let fullResponse = ""
+      let userEntryAdded = false
+      let assistantEntryAdded = false
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        const chunk = decoder.decode(value, { stream: true })
+        const lines = chunk.split("\n")
+
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue
+          const data = line.slice(6)
+          if (data === "[DONE]") continue
+
+          try {
+            const parsed = JSON.parse(data)
+            
+            // First message contains the extracted question
+            if (parsed.question && !userEntryAdded) {
+              setTranscript(prev => [...prev, { speaker: "user", text: userText }])
+              userEntryAdded = true
+            }
+            
+            // Subsequent messages contain answer tokens
+            if (parsed.token) {
+              fullResponse += parsed.token
+              
+              if (!assistantEntryAdded) {
+                setTranscript(prev => [...prev, { speaker: "assistant", text: fullResponse }])
+                assistantEntryAdded = true
+              } else {
+                setTranscript(prev => {
+                  const updated = [...prev]
+                  updated[updated.length - 1] = { speaker: "assistant", text: fullResponse }
+                  return updated
+                })
+              }
+            }
+          } catch {}
+        }
+      }
+
+      // Speak the full response with ElevenLabs
+      if (fullResponse.trim()) {
+        speakWithElevenLabs(fullResponse)
+      }
+    } catch (error) {
+      console.error("[Process] Error:", error)
+    } finally {
+      setIsProcessing(false)
+      processingLockRef.current = false
+    }
+  }, [speakWithElevenLabs])
 
   const startListening = useCallback(async () => {
-    unlockTTS()
-
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
@@ -256,11 +201,9 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
 
       const audioContext = new AudioContext()
       audioContextRef.current = audioContext
-
       const analyser = audioContext.createAnalyser()
       analyser.fftSize = 256
       analyserRef.current = analyser
-
       const source = audioContext.createMediaStreamSource(stream)
       source.connect(analyser)
 
@@ -302,15 +245,18 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
           }
         }
 
+        // Clear any pending timer
         if (pauseTimerRef.current) {
           clearTimeout(pauseTimerRef.current)
           pauseTimerRef.current = null
         }
 
+        // Update interim display
         if (interimText) {
           setInterimTranscript(interimText)
         }
 
+        // Handle final results
         if (finalText) {
           currentParagraphRef.current = currentParagraphRef.current
             ? currentParagraphRef.current + " " + finalText.trim()
@@ -318,37 +264,36 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
           setCurrentParagraph(currentParagraphRef.current)
           setInterimTranscript("")
 
+          // Set timer to process after brief pause (150ms for speed)
           const fullText = currentParagraphRef.current.trim()
           if (fullText.length > 5 && isListeningRef.current && !processingLockRef.current) {
             pauseTimerRef.current = setTimeout(() => {
               if (!processingLockRef.current && isListeningRef.current) {
-                checkAndAnswer(fullText)
+                processText(fullText)
               }
-            }, 200)
+            }, 150)
           }
         }
       }
 
       recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-        console.error("[v0] Recognition error:", event.error)
+        console.error("[Recognition] Error:", event.error)
         if (event.error === "not-allowed") setHasPermission(false)
       }
 
       recognition.onend = () => {
         if (isListeningRef.current) {
-          try {
-            recognition.start()
-          } catch {}
+          try { recognition.start() } catch {}
         }
       }
 
       recognition.start()
       recognitionRef.current = recognition
     } catch (error) {
-      console.error("[v0] Start error:", error)
+      console.error("[Start] Error:", error)
       setHasPermission(false)
     }
-  }, [checkAndAnswer, unlockTTS])
+  }, [processText])
 
   const stopListening = useCallback(() => {
     isListeningRef.current = false
@@ -363,19 +308,20 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
       recognitionRef.current = null
     }
 
+    if (audioElementRef.current) {
+      audioElementRef.current.pause()
+      audioElementRef.current = null
+    }
+
     setInterimTranscript("")
     setCurrentParagraph("")
     currentParagraphRef.current = ""
     processingLockRef.current = false
-
-    if (typeof window !== "undefined" && "speechSynthesis" in window) {
-      window.speechSynthesis.cancel()
-      setIsSpeaking(false)
-    }
+    setIsSpeaking(false)
 
     if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current)
     if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach((track) => track.stop())
+      mediaStreamRef.current.getTracks().forEach(track => track.stop())
       mediaStreamRef.current = null
     }
     if (audioContextRef.current) {
@@ -390,7 +336,7 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     return () => {
       if (recognitionRef.current) recognitionRef.current.stop()
-      if (typeof window !== "undefined" && "speechSynthesis" in window) window.speechSynthesis.cancel()
+      if (audioElementRef.current) audioElementRef.current.pause()
     }
   }, [])
 
@@ -402,7 +348,7 @@ export function MicrophoneProvider({ children }: { children: ReactNode }) {
       mediaStreamRef.current = stream
       setHasPermission(true)
       return true
-    } catch (error) {
+    } catch {
       setHasPermission(false)
       return false
     }
